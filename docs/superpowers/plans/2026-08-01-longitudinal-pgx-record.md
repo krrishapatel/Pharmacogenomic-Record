@@ -98,11 +98,27 @@ genotype data and must never be committed:
 #!/usr/bin/env bash
 set -euo pipefail
 VERSION="3.4.0"
+EXPECTED_BYTES=64934
 DEST="data/pharmcat_positions_${VERSION}.vcf"
 URL="https://github.com/PharmGKB/PharmCAT/releases/download/v${VERSION}/pharmcat_positions_${VERSION}.vcf"
 mkdir -p data
-curl -sSL -o "$DEST" "$URL"
-echo "wrote $DEST ($(wc -c < "$DEST") bytes)"
+
+# Download to a temp file and validate before replacing the pinned reference.
+# Without -f, curl writes the HTTP error body to the output file and exits 0,
+# which would silently overwrite the good file with "Not Found".
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+curl -fsSL -o "$TMP" "$URL"
+
+ACTUAL_BYTES="$(wc -c < "$TMP" | tr -d " ")"
+if [ "$ACTUAL_BYTES" -ne "$EXPECTED_BYTES" ]; then
+    echo "refusing to install: expected ${EXPECTED_BYTES} bytes, got ${ACTUAL_BYTES}" >&2
+    exit 1
+fi
+
+mv "$TMP" "$DEST"
+trap - EXIT
+echo "wrote $DEST (${ACTUAL_BYTES} bytes)"
 ```
 
 Run:
@@ -122,7 +138,8 @@ from pathlib import Path
 
 from pgxrecord import POSITIONS_FILENAME
 
-POSITIONS = Path("data") / POSITIONS_FILENAME
+REPO_ROOT = Path(__file__).resolve().parents[1]
+POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
 
 
 def test_positions_file_exists():
@@ -158,8 +175,12 @@ def test_positions_file_has_expected_shape():
 
 
 def test_positions_file_is_grch38():
-    """Confirms the build, which is why we join on rsID rather than position."""
-    assert "GRCh38" in POSITIONS.read_text(errors="ignore")[:20000]
+    """Confirms the build, which is why we join on rsID rather than position.
+
+    Asserts on the contig header so the exact patch level is pinned, not just
+    the substring "GRCh38" appearing somewhere in the file.
+    """
+    assert '##contig=<ID=chr1,assembly=GRCh38.p14' in POSITIONS.read_text()
 ```
 
 - [ ] **Step 4: Run tests to verify they fail, then pass**
@@ -210,7 +231,8 @@ from pgxrecord.positions import (
     load_positions,
 )
 
-POSITIONS = Path("data") / POSITIONS_FILENAME
+REPO_ROOT = Path(__file__).resolve().parents[1]
+POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
 
 
 @pytest.fixture(scope="module")
@@ -245,6 +267,16 @@ def test_index_by_rsid_skips_unjoinable_positions(positions):
     assert index["rs114096998"].gene == "DPYD"
     assert None not in index
     assert "." not in index
+
+
+def test_position_without_gene_tag_is_kept_with_gene_none(positions):
+    """rs12777823 has INFO 'POI' and no PX= tag -- 1225 of 1226 have a gene.
+
+    It must parse, not raise, and must not be counted as a gene.
+    """
+    by_rsid = {p.rsid: p for p in positions if p.rsid}
+    assert by_rsid["rs12777823"].gene is None
+    assert len([p for p in positions if p.gene is not None]) == 1225
 
 
 def test_genes_covered(positions):
@@ -294,14 +326,21 @@ class ReferencePosition:
     rsid: str | None
     ref: str
     alt: list[str]
-    gene: str
+    gene: str | None
 
 
-def _parse_gene(info: str) -> str:
+def _parse_gene(info: str) -> str | None:
+    """Extract the PX= gene tag, or None when the position has no gene.
+
+    Exactly one position in 3.4.0 (rs12777823, chr10:94645745) carries INFO
+    'POI' -- a position of interest with no gene assignment. It is a real,
+    joinable position, so we keep it and leave gene as None rather than
+    rejecting the file.
+    """
     for field in info.split(";"):
         if field.startswith("PX="):
             return field[3:]
-    raise ValueError(f"no PX= gene tag in INFO field: {info!r}")
+    return None
 
 
 def load_positions(path: Path) -> list[ReferencePosition]:
@@ -337,8 +376,11 @@ def index_by_rsid(
 
 
 def genes_covered(positions: list[ReferencePosition]) -> set[str]:
-    """Return every gene appearing in the reference table."""
-    return {p.gene for p in positions}
+    """Return every gene appearing in the reference table.
+
+    Positions with no gene assignment (INFO 'POI') are excluded.
+    """
+    return {p.gene for p in positions if p.gene is not None}
 ```
 
 Note: `alt: list[str]` inside a frozen dataclass is intentional — frozen blocks attribute rebinding, which is what the immutability test checks. Do not switch to `tuple` without updating the test.
@@ -808,8 +850,11 @@ def build_vcf(
     )
 
     all_joinable = set(by_rsid)
-    genes_covered_partly = {by_rsid[r].gene for r in covered}
-    all_genes = {p.gene for p in positions}
+    # Positions with no PX= gene tag (INFO 'POI') contribute no gene.
+    genes_covered_partly = {
+        by_rsid[r].gene for r in covered if by_rsid[r].gene is not None
+    }
+    all_genes = {p.gene for p in positions if p.gene is not None}
 
     return CoverageReport(
         covered_rsids=covered,
@@ -1505,7 +1550,7 @@ from pgxrecord.evaluate import query_drug
 from pgxrecord.guidelines import load_pairs
 from pgxrecord.store import RecordStore
 
-PAIRS = load_pairs(Path("data/gene_drug_pairs.json"))
+PAIRS = load_pairs(Path(__file__).resolve().parents[1] / "data/gene_drug_pairs.json")
 
 
 @pytest.fixture
@@ -1853,7 +1898,7 @@ from pgxrecord.drift import affected_by_guideline_change
 from pgxrecord.guidelines import load_pairs
 from pgxrecord.store import RecordStore
 
-PAIRS = load_pairs(Path("data/gene_drug_pairs.json"))
+PAIRS = load_pairs(Path(__file__).resolve().parents[1] / "data/gene_drug_pairs.json")
 
 
 @pytest.fixture
@@ -2028,7 +2073,7 @@ def test_ingest_to_calls_reports_uncovered_genes_without_docker(tmp_path):
     """The ingest half runs without Docker and must surface coverage."""
     vcf_path, report = ingest_to_calls(
         FIXTURES / "23andme_valid.txt",
-        Path("data/pharmcat_positions_3.4.0.vcf"),
+        Path(__file__).resolve().parents[1] / "data/pharmcat_positions_3.4.0.vcf",
         tmp_path,
     )
 
@@ -2098,7 +2143,10 @@ from pgxrecord.ingest.vcf import CoverageReport, build_vcf
 from pgxrecord.positions import load_positions
 from pgxrecord.store import RecordStore
 
-PAIRS_PATH = Path("data/gene_drug_pairs.json")
+# Anchored to the installed package, not the CWD, so the CLI works from
+# anywhere rather than only from the repo root.
+DATA_DIR = Path(__file__).resolve().parents[2].parent / "data"
+PAIRS_PATH = DATA_DIR / "gene_drug_pairs.json"
 
 
 def ingest_to_calls(
@@ -2117,7 +2165,7 @@ def cmd_ingest(
 ) -> None:
     workdir.mkdir(parents=True, exist_ok=True)
     vcf_path, report = ingest_to_calls(
-        raw_path, Path("data") / POSITIONS_FILENAME, workdir
+        raw_path, DATA_DIR / POSITIONS_FILENAME, workdir
     )
     print(f"wrote {vcf_path}")
     print(f"covered positions: {len(report.covered_rsids)}")

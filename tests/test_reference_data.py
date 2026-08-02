@@ -2,7 +2,8 @@ from pathlib import Path
 
 from pgxrecord import POSITIONS_FILENAME
 
-POSITIONS = Path("data") / POSITIONS_FILENAME
+REPO_ROOT = Path(__file__).resolve().parents[1]
+POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
 
 
 def test_positions_file_exists():
@@ -38,5 +39,9 @@ def test_positions_file_has_expected_shape():
 
 
 def test_positions_file_is_grch38():
-    """Confirms the build, which is why we join on rsID rather than position."""
-    assert "GRCh38" in POSITIONS.read_text(errors="ignore")[:20000]
+    """Confirms the build, which is why we join on rsID rather than position.
+
+    Asserts on the contig header so the exact patch level is pinned, not just
+    the substring "GRCh38" appearing somewhere in the file.
+    """
+    assert '##contig=<ID=chr1,assembly=GRCh38.p14' in POSITIONS.read_text()
