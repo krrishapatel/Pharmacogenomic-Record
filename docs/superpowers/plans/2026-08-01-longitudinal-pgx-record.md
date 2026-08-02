@@ -19,6 +19,12 @@
 - **`cannot_assess` must never render as reassurance.** No code path may return an empty/falsy "nothing found" for an unassessable gene.
 - **Records are append-only.** No `UPDATE`, no `DELETE` on the records table, ever.
 - **No clinical claims in any output string.** No dose figures, no "you should" phrasing.
+- **Docker is NOT installed on the development machine.** Tasks 1-8 are entirely
+  Docker-free and must stay that way. Only Task 9's manual end-to-end ingest
+  needs it, and that step is documented as unverified rather than skipped.
+- **Genotype data is never committed.** `data/.gitignore` denies everything
+  except the two committed reference tables; PharmCAT scratch output goes to
+  `work/`, which is git-ignored.
 
 ---
 
@@ -71,11 +77,17 @@ PHARMCAT_IMAGE = f"pgkb/pharmcat:{PHARMCAT_VERSION}"
 POSITIONS_FILENAME = f"pharmcat_positions_{PHARMCAT_VERSION}.vcf"
 ```
 
-`data/.gitignore` (keep the directory, ignore scratch output):
+`data/.gitignore`. The reference position table and the gene-drug pair table
+are committed; everything else that lands here is derived or personal
+genotype data and must never be committed:
 
 ```
-*.tmp
-*.out
+# Ignore everything by default -- genotype data must never be committed.
+*
+# ...except this file and the two committed reference tables.
+!.gitignore
+!pharmcat_positions_*.vcf
+!gene_drug_pairs.json
 ```
 
 - [ ] **Step 2: Write the fetch script**
@@ -189,6 +201,8 @@ from pathlib import Path
 import pytest
 
 from pgxrecord import POSITIONS_FILENAME
+from dataclasses import FrozenInstanceError
+
 from pgxrecord.positions import (
     ReferencePosition,
     genes_covered,
@@ -243,7 +257,7 @@ def test_reference_position_is_immutable():
     p = ReferencePosition(
         chrom="chr1", pos=1, rsid="rs1", ref="A", alt=["G"], gene="DPYD"
     )
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         p.pos = 2
 ```
 
@@ -588,9 +602,31 @@ def test_writes_vcf_with_matched_positions(tmp_path):
 
     assert text.startswith("##fileformat=VCFv4.2")
     assert "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE" in text
+    # Every contig we emit must be declared in the header.
+    assert '##contig=<ID=chr1,assembly=GRCh38.p14,species="Homo sapiens">' in text
     # Uses the GRCh38 coordinate from the reference, NOT the raw file's 999.
     assert "chr1\t100\trs1\tG\tT\t.\tPASS\t.\tGT\t0/1" in text
     assert "999" not in text
+
+
+def test_contigs_and_rows_are_in_natural_chromosome_order(tmp_path):
+    """chr10 must not sort before chr2. Plain string sort gets this wrong."""
+    out = tmp_path / "out.vcf"
+    calls = [
+        RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG"),
+        RawCall(rsid="rs3", chrom="10", pos=300, genotype="CC"),
+    ]
+
+    build_vcf(calls, REF, out)
+    lines = out.read_text().splitlines()
+
+    contigs = [line for line in lines if line.startswith("##contig")]
+    assert "ID=chr1," in contigs[0]
+    assert "ID=chr10," in contigs[1]
+    assert "ID=chr22," in contigs[2]
+
+    data = [line for line in lines if not line.startswith("#")]
+    assert [line.split("\t")[0] for line in data] == ["chr1", "chr10"]
 
 
 def test_genotype_translation():
@@ -674,12 +710,37 @@ from pathlib import Path
 from pgxrecord.ingest.raw import RawCall
 from pgxrecord.positions import ReferencePosition, index_by_rsid
 
-VCF_HEADER = """##fileformat=VCFv4.2
+_VCF_META = """##fileformat=VCFv4.2
 ##source=pgxrecord
 ##reference=GRCh38
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE
 """
+_VCF_COLUMNS = (
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+)
+
+
+def _chrom_sort_key(chrom: str) -> tuple[int, str]:
+    """Order chromosomes naturally: chr1, chr2, ... chr10, ... chrX, chrY.
+
+    Plain string sort puts chr10 before chr2, which produces an out-of-order
+    VCF. Numeric contigs sort by value; X/Y/M sort after them.
+    """
+    name = chrom.removeprefix("chr")
+    return (int(name), "") if name.isdigit() else (10**6, name)
+
+
+def _contig_lines(positions: list[ReferencePosition]) -> str:
+    """Declare every contig we emit, in sorted order.
+
+    VCF consumers may reject or misparse records whose contig was never
+    declared in the header.
+    """
+    chroms = sorted({p.chrom for p in positions}, key=_chrom_sort_key)
+    return "".join(
+        f'##contig=<ID={chrom},assembly=GRCh38.p14,species="Homo sapiens">\n'
+        for chrom in chroms
+    )
 
 
 @dataclass(frozen=True)
@@ -733,8 +794,18 @@ def build_vcf(
             f"{','.join(ref.alt)}\t.\tPASS\t.\tGT\t{gt}"
         )
 
-    rows.sort(key=lambda row: (row.split("\t")[0], int(row.split("\t")[1])))
-    out_path.write_text(VCF_HEADER + "\n".join(rows) + "\n")
+    rows.sort(
+        key=lambda row: (
+            _chrom_sort_key(row.split("\t")[0]),
+            int(row.split("\t")[1]),
+        )
+    )
+    out_path.write_text(
+        _VCF_META
+        + _contig_lines(positions)
+        + _VCF_COLUMNS
+        + "".join(f"{row}\n" for row in rows)
+    )
 
     all_joinable = set(by_rsid)
     genes_covered_partly = {by_rsid[r].gene for r in covered}
@@ -751,7 +822,7 @@ def build_vcf(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_ingest_vcf.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1185,6 +1256,8 @@ rather than silently rewriting clinical history.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1248,10 +1321,21 @@ class RecordStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection, commit on success, and always close.
+
+        sqlite3's own connection context manager commits the transaction but
+        does NOT close the handle, so using it directly leaks a file
+        descriptor per call. This wraps both.
+        """
         conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def append(
         self,
@@ -2031,6 +2115,7 @@ def ingest_to_calls(
 def cmd_ingest(
     store: RecordStore, raw_path: Path, subject_id: str, workdir: Path
 ) -> None:
+    workdir.mkdir(parents=True, exist_ok=True)
     vcf_path, report = ingest_to_calls(
         raw_path, Path("data") / POSITIONS_FILENAME, workdir
     )
@@ -2066,7 +2151,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest = sub.add_parser("ingest", help="ingest a 23andMe raw file")
     p_ingest.add_argument("raw_path", type=Path)
     p_ingest.add_argument("--subject", required=True)
-    p_ingest.add_argument("--workdir", type=Path, default=Path("data"))
+    p_ingest.add_argument("--workdir", type=Path, default=Path("work"))
 
     p_query = sub.add_parser("query", help="query a drug against a stored record")
     p_query.add_argument("drug")
@@ -2161,7 +2246,7 @@ requires resolving CPIC/PharmGKB data-use terms first.
 - [ ] **Step 6: Run the full suite**
 
 Run: `pytest -v`
-Expected: PASS, 50 tests across 8 files
+Expected: PASS, 51 tests across 8 files
 
 - [ ] **Step 7: Commit**
 
