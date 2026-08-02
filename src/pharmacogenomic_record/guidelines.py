@@ -15,8 +15,10 @@ complete, non-blank, https, and unique, or nothing loads at all.
 from __future__ import annotations
 
 import json
+import unicodedata
 from dataclasses import dataclass, fields
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 class GuidelineTableError(ValueError):
@@ -44,18 +46,34 @@ _FIELD_NAMES = tuple(f.name for f in fields(GuidelineRef))
 # not belong in this table (see the module docstring).
 _MAX_FIELD_LENGTH = 200
 
+# The only host we will cite. The entire output of this tool is a citation, so
+# a row pointing anywhere else is a confident answer sourced from somewhere we
+# never vetted -- indistinguishable, to a reader, from a real one.
+_CITATION_HOST = "cpicpgx.org"
+
 
 def normalize_drug(drug: str) -> str:
-    """The comparison form of a drug name: stripped and casefolded.
+    """The comparison form of a drug name: NFKC-normalized, stripped, casefolded.
 
     Spelled once and used by every lookup so that a query and the table can
     never be normalized differently. Rejects a blank name rather than
     returning "" -- a blank query that comes back "no guidance for this drug"
     is a fabricated negative about a drug nobody named.
+
+    NFKC folds the compatibility forms a real paste produces -- fullwidth
+    "ＷＡＲＦＡＲＩＮ" from an IME or a PDF, a non-breaking space -- onto their
+    ASCII equivalents. Without it those queries fall through to
+    `no_guidance_for_pair`, which is the safe direction but still a wrong
+    answer nobody would question. NFKC does *not* fold homoglyphs from other
+    scripts (Cyrillic "а" stays distinct from Latin "a"), so a spoofed name
+    still fails closed, which is correct: we would rather refuse to recognize
+    a name than match the wrong drug.
     """
     if not isinstance(drug, str):
         raise TypeError(f"drug name must be a string, got {type(drug).__name__}")
-    needle = drug.strip().casefold()
+    # NFKC first: it turns U+00A0 and friends into plain spaces, so strip()
+    # only works on the whole of the whitespace after normalizing.
+    needle = unicodedata.normalize("NFKC", drug).strip().casefold()
     if not needle:
         raise ValueError(
             f"refusing to look up a blank drug name ({drug!r}): a blank query "
@@ -108,6 +126,33 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
         raise GuidelineTableError(
             f"entry {index} url {url!r} is not https; guidance must be cited over "
             f"a channel that cannot be rewritten in transit"
+        )
+
+    # A row whose citation does not match its own gene is the worst failure this
+    # table has, because it is silent: the query answers guidance_found and
+    # cites a real-looking guideline for a different gene. Nothing downstream
+    # can catch it -- the citation IS the answer -- so it has to be caught here.
+    gene = entry["gene"]
+    if gene.strip().casefold() not in entry["cpic_pair_id"].casefold():
+        raise GuidelineTableError(
+            f"entry {index} cites cpic_pair_id {entry['cpic_pair_id']!r}, which "
+            f"does not name its own gene {gene!r}; a pair id belonging to another "
+            f"gene would be reported as guidance for this one"
+        )
+
+    # Only the gene is checked against the pair id, never the drug: CPIC names
+    # some guidelines after a drug class rather than a member, so DPYD's real
+    # pair id could legitimately be "DPYD-fluoropyrimidines" for a row whose
+    # drug is "capecitabine". Requiring the drug to appear would reject correct
+    # future rows, and a rejected row loads as nothing at all.
+    host = urlsplit(url).hostname
+    if host is None or (
+        host != _CITATION_HOST and not host.endswith(f".{_CITATION_HOST}")
+    ):
+        raise GuidelineTableError(
+            f"entry {index} url {url!r} is not on {_CITATION_HOST} (host "
+            f"{host!r}); this table cites CPIC and nothing else, so a link "
+            f"elsewhere would be presented as CPIC guidance"
         )
 
     return GuidelineRef(**entry)

@@ -31,6 +31,7 @@ from pharmacogenomic_record.guidelines import (
     GuidelineTableError,
     find_pairs_for_drug,
     load_pairs,
+    normalize_drug,
 )
 from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
@@ -54,10 +55,38 @@ REASSURING = (
 # Anything that would make the output a recommendation rather than a citation.
 DIRECTIVES = ("mg", "you should", "take ", "avoid ", "dose of", "recommend")
 
+# A subject id is caller-supplied text, so it can itself contain every phrase
+# the reassurance check looks for. If any explanation interpolates the id, a
+# consumer scanning for an all-clear gets one from data the subject named.
+HOSTILE_SUBJECT_ID = "patient A - no interaction, safe, normal"
+
+SUBJECT_IDS = [
+    pytest.param("s1", id="plain"),
+    pytest.param(HOSTILE_SUBJECT_ID, id="hostile"),
+]
+
 
 @pytest.fixture
 def store(tmp_path):
     return RecordStore(tmp_path / "records.db")
+
+
+class StubCallSource:
+    """A call source that is not a RecordStore, for combinations it forbids.
+
+    `RecordStore` has a CHECK constraint that forbids a phenotype on an uncalled
+    row, so through the store an uncalled gene always has phenotype None. That
+    makes a guard written as "uncalled AND no phenotype" indistinguishable from
+    the correct "uncalled" -- until some other call source (a caller result not
+    yet appended, an importer, a future backend) supplies the combination. Only
+    `coverage` may decide assessability, so the rule is pinned here.
+    """
+
+    def __init__(self, calls):
+        self._calls = list(calls)
+
+    def latest(self, subject_id):
+        return list(self._calls)
 
 
 def write_table(tmp_path, payload) -> Path:
@@ -244,44 +273,80 @@ def test_uncalled_gene_never_yields_guidance_or_a_clean_negative(store, coverage
 
     results = query_drug(store, "s1", "codeine", PAIRS)
 
+    # The equality above already excludes both other outcomes; restating it as
+    # two != assertions adds nothing.
     assert [r.outcome for r in results] == [CANNOT_ASSESS]
-    assert results[0].outcome != GUIDANCE_FOUND
-    assert results[0].outcome != NO_GUIDANCE_FOR_PAIR
     assert results[0].phenotype is None
 
 
-def cannot_assess_situations(store):
-    """Every distinct way a query can end in cannot_assess.
+@pytest.mark.parametrize("coverage", UNCALLED)
+def test_coverage_alone_decides_assessability_even_with_a_phenotype(coverage):
+    """`coverage` is the only input to assessability. Never phenotype truthiness.
+
+    A guard written as `coverage != CALLED and phenotype is None` is
+    indistinguishable from the correct one through `RecordStore`, whose CHECK
+    constraint forbids a phenotype on an uncalled row. Fed from any other call
+    source it reports guidance_found for a gene the array never covered -- the
+    exact collapse this module forbids. And it cannot be repaired by testing
+    phenotype instead: a *called* gene may legitimately have phenotype None
+    (F2, F5, VKORC1, CFTR, IFNL3, ABCG2 have no metabolizer phenotype), which
+    the null-phenotype test above pins from the other direction.
+    """
+    source = StubCallSource(
+        [GeneCall("CYP2D6", "*1/*1", "Normal Metabolizer", coverage)]
+    )
+
+    results = query_drug(source, "s1", "codeine", PAIRS)
+
+    assert [r.outcome for r in results] == [CANNOT_ASSESS]
+    # A phenotype on an unassessable gene is not reported: there is no phenotype
+    # to stand behind, whatever the row happened to carry.
+    assert results[0].phenotype is None
+    assert "Normal Metabolizer" not in results[0].explanation
+
+
+def cannot_assess_situations(tmp_path, subject_id):
+    """Every distinct way a query can end in cannot_assess, for one subject id.
 
     Returned as (label, results) so the reassurance and directive tests can
     cover all of them rather than the single not_covered case in the brief.
+    Each situation gets its own store so that every one of them -- including
+    the no-record path, which needs a subject the store has never seen -- can
+    use the *same* subject id. That is what lets the caller feed a hostile id
+    through both the no-record and the record-exists wordings.
     """
-    store.append(
-        "covered",
-        [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)],
-        guideline_version="cpic-2026-07",
+
+    def stored(name, calls):
+        store = RecordStore(tmp_path / f"{name}.db")
+        if calls is not None:
+            store.append(subject_id, calls, guideline_version="cpic-2026-07")
+        return store
+
+    covered = stored(
+        "covered", [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)]
     )
-    store.append(
-        "uncovered",
-        [GeneCall("CYP2D6", None, None, NOT_COVERED)],
-        guideline_version="cpic-2026-07",
-    )
-    store.append(
-        "ambiguous",
-        [GeneCall("CYP2D6", None, None, INDETERMINATE)],
-        guideline_version="cpic-2026-07",
-    )
+    uncovered = stored("uncovered", [GeneCall("CYP2D6", None, None, NOT_COVERED)])
+    ambiguous = stored("ambiguous", [GeneCall("CYP2D6", None, None, INDETERMINATE)])
+    # No append at all: the subject has no stored record of any kind.
+    empty = stored("empty", None)
     return [
-        ("not_covered", query_drug(store, "uncovered", "codeine", PAIRS)),
-        ("indeterminate", query_drug(store, "ambiguous", "codeine", PAIRS)),
-        ("gene absent", query_drug(store, "covered", "codeine", PAIRS)),
-        ("no record", query_drug(store, "nobody", "codeine", PAIRS)),
+        ("not_covered", query_drug(uncovered, subject_id, "codeine", PAIRS)),
+        ("indeterminate", query_drug(ambiguous, subject_id, "codeine", PAIRS)),
+        ("gene absent", query_drug(covered, subject_id, "codeine", PAIRS)),
+        ("no record", query_drug(empty, subject_id, "codeine", PAIRS)),
     ]
 
 
-def test_no_cannot_assess_explanation_reads_as_reassurance(store):
-    """The invariant's last line of defense, across all four situations."""
-    situations = cannot_assess_situations(store)
+@pytest.mark.parametrize("subject_id", SUBJECT_IDS)
+def test_no_cannot_assess_explanation_reads_as_reassurance(tmp_path, subject_id):
+    """The invariant's last line of defense, across all four situations.
+
+    Run twice: once with an ordinary subject id, once with an id that itself
+    spells out every reassuring phrase. No explanation may interpolate the
+    subject id, because a caller-supplied string inside a safety-critical
+    sentence lets the data decide how the answer reads.
+    """
+    situations = cannot_assess_situations(tmp_path, subject_id)
     assert len(situations) == 4
 
     for label, results in situations:
@@ -293,6 +358,29 @@ def test_no_cannot_assess_explanation_reads_as_reassurance(store):
         # It must say, in words, that this is missing data rather than a
         # negative finding.
         assert "unknown" in text or "absence of data" in text, f"{label}: {text!r}"
+
+
+@pytest.mark.parametrize("subject_id", SUBJECT_IDS)
+def test_no_cannot_assess_explanation_quotes_the_subject_id(tmp_path, subject_id):
+    """The subject id belongs in the caller's context, not in the explanation.
+
+    Stronger than the reassurance check and independent of it: even an innocuous
+    id must stay out, so the leak cannot come back through an id that happens
+    not to contain a reassuring word today.
+    """
+    situations = cannot_assess_situations(tmp_path, subject_id)
+    for label, results in situations:
+        text = results[0].explanation
+        assert subject_id not in text, f"{label}: subject id leaked into {text!r}"
+    # Both wordings must still be reachable, or the assertion above is vacuous:
+    # "never genotyped" and "genotyped but this gene was not covered" are
+    # different states and must not collapse now that the id is gone.
+    by_label = dict(situations)
+    no_record = by_label["no record"][0].explanation.lower()
+    gene_absent = by_label["gene absent"][0].explanation.lower()
+    assert no_record != gene_absent
+    assert "no record" in no_record
+    assert "no call for this gene" in gene_absent
 
 
 def test_no_explanation_of_any_outcome_contains_a_directive(store):
@@ -346,6 +434,40 @@ def test_cannot_assess_is_not_interchangeable_with_no_guidance(store):
     # pair answer has no gene to name.
     assert unassessable.gene == "CYP2D6"
     assert no_pair.gene is None
+
+
+# --------------------------------------------------------------------------
+# The citation is the deliverable: every explanation that names a pair must
+# carry that pair's URL in its own text.
+# --------------------------------------------------------------------------
+
+
+def test_explanations_cite_the_guideline_url_in_their_own_text(store):
+    """Checking only the `guideline.url` field lets the prose drop the link.
+
+    A consumer that renders `explanation` -- which is what the text is for --
+    would then show a pair id with nothing to look up, for both the outcome
+    that found guidance and the outcome that could not assess it.
+    """
+    store.append(
+        "s1",
+        [
+            GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED),
+            GeneCall("CYP2D6", None, None, NOT_COVERED),
+        ],
+        guideline_version="cpic-2026-07",
+    )
+
+    found = query_drug(store, "s1", "clopidogrel", PAIRS)[0]
+    unassessable = query_drug(store, "s1", "codeine", PAIRS)[0]
+
+    assert found.outcome == GUIDANCE_FOUND
+    assert found.guideline.url in found.explanation
+
+    # cannot_assess cites the pair too: the reader is told what they *would*
+    # consult once the gene is genotyped, not left with a dead end.
+    assert unassessable.outcome == CANNOT_ASSESS
+    assert unassessable.guideline.url in unassessable.explanation
 
 
 # --------------------------------------------------------------------------
@@ -436,7 +558,14 @@ def test_overall_outcome_refuses_an_empty_or_unknown_answer():
 
 
 @pytest.mark.parametrize(
-    "drug", ["clopidogrel", "codeine", "warfarin", "amoxicillin", "zzz-not-a-drug"]
+    "drug",
+    [
+        # A drug in the table (one gene called, one pair) and a drug that is not
+        # in it at all. "codeine"/"warfarin" exercise the same branch as
+        # "clopidogrel"; "zzz-not-a-drug" the same one as "amoxicillin".
+        pytest.param("clopidogrel", id="in-table"),
+        pytest.param("amoxicillin", id="not-in-table"),
+    ],
 )
 def test_query_drug_never_returns_an_empty_list(store, drug):
     store.append(
@@ -536,7 +665,59 @@ def test_drug_matching_ignores_case_and_surrounding_whitespace(store, drug):
     assert results[0].guideline.cpic_pair_id == "CYP2C19-clopidogrel"
 
 
-@pytest.mark.parametrize("drug", ["", "   ", "\t\n"])
+@pytest.mark.parametrize(
+    "drug",
+    [
+        pytest.param("ＷＡＲＦＡＲＩＮ", id="fullwidth-upper"),
+        pytest.param("ｗａｒｆａｒｉｎ", id="fullwidth-lower"),
+        pytest.param(" warfarin ", id="non-breaking-space"),
+    ],
+)
+def test_compatibility_forms_of_a_drug_name_still_match(store, drug):
+    """A name pasted from a PDF or typed on an IME must not answer 'no guidance'.
+
+    Falling through to no_guidance_for_pair is the safe direction, but it is
+    still a wrong answer the user has no reason to question.
+    """
+    store.append(
+        "s1",
+        [
+            GeneCall("CYP2C9", "*1/*3", "Intermediate Metabolizer", CALLED),
+            GeneCall("VKORC1", "rs9923231 variant (T)/rs9923231 variant (T)",
+                     None, CALLED),
+        ],
+        guideline_version="cpic-2026-07",
+    )
+
+    results = query_drug(store, "s1", drug, PAIRS)
+
+    assert {r.gene for r in results} == {"CYP2C9", "VKORC1"}
+    assert {r.outcome for r in results} == {GUIDANCE_FOUND}
+
+
+def test_normalization_does_not_collide_two_distinct_shipped_drugs():
+    """NFKC must fold compatibility forms without merging different drugs."""
+    drugs = {p.drug for p in PAIRS}
+    normalized = {normalize_drug(d) for d in drugs}
+    assert len(normalized) == len(drugs)
+    # Each shipped name is already in normal form, so normalizing is a no-op.
+    for drug in drugs:
+        assert normalize_drug(drug) == drug
+
+
+def test_a_homoglyph_of_a_drug_name_fails_closed():
+    """Cyrillic "а" is not Latin "a" and NFKC does not fold it -- correctly.
+
+    A spoofed name must not match a real drug. Refusing to recognize the name
+    is the right failure: the alternative is matching the wrong drug.
+    """
+    spoofed = "wаrfarin"
+    assert spoofed != "warfarin"
+    assert normalize_drug(spoofed) != normalize_drug("warfarin")
+    assert find_pairs_for_drug(spoofed, PAIRS) == []
+
+
+@pytest.mark.parametrize("drug", ["", "   ", "\t\n", " ", "　"])
 def test_blank_drug_name_is_refused_not_answered(store, drug):
     """A blank query answered 'no guidance' is a fabricated negative."""
     with pytest.raises(ValueError, match="blank"):
@@ -652,6 +833,32 @@ def test_load_pairs_round_trips_a_minimal_table(tmp_path):
             id="insecure-url",
         ),
         pytest.param([VALID_ENTRY, VALID_ENTRY], "duplicate", id="duplicate-pair"),
+        # The licensing guard. It exists so nobody pastes guideline prose into a
+        # field, which is the thing the module docstring says this table never
+        # carries -- and which we have no verified right to redistribute.
+        pytest.param(
+            [{**VALID_ENTRY, "cpic_pair_id": "CYP2C19-clopidogrel " + "x" * 200}],
+            "not guideline prose",
+            id="over-long-field",
+        ),
+        # A citation that does not match its own row: the wrong guideline, cited
+        # confidently, is a wrong answer nothing downstream can detect.
+        pytest.param(
+            [{**VALID_ENTRY, "cpic_pair_id": "SLCO1B1-simvastatin"}],
+            "does not name its own gene",
+            id="pair-id-for-another-gene",
+        ),
+        pytest.param(
+            [{**VALID_ENTRY, "url": "https://example.com/x"}],
+            "cpicpgx.org",
+            id="url-off-host",
+        ),
+        # A host that merely *contains* the real one must not pass.
+        pytest.param(
+            [{**VALID_ENTRY, "url": "https://cpicpgx.org.evil.example/x"}],
+            "cpicpgx.org",
+            id="url-lookalike-host",
+        ),
     ],
 )
 def test_load_pairs_rejects_an_untrustworthy_table(tmp_path, payload, match):
@@ -659,6 +866,60 @@ def test_load_pairs_rejects_an_untrustworthy_table(tmp_path, payload, match):
     path = write_table(tmp_path, payload)
     with pytest.raises(GuidelineTableError, match=match):
         load_pairs(path)
+
+
+def test_a_typod_citation_is_refused_rather_than_answered(tmp_path):
+    """The reviewer's exact row: right gene and drug, someone else's guideline.
+
+    Loaded, this answers guidance_found for CYP2C19/clopidogrel while citing the
+    statin guideline at an arbitrary host. The whole output of this tool is a
+    citation, so a wrong citation is a wrong answer that looks entirely
+    confident. Nothing loads at all instead.
+    """
+    path = write_table(
+        tmp_path,
+        [
+            {
+                "gene": "CYP2C19",
+                "drug": "clopidogrel",
+                "cpic_pair_id": "SLCO1B1-simvastatin",
+                "url": "https://example.com/x",
+            }
+        ],
+    )
+    with pytest.raises(GuidelineTableError, match="CYP2C19"):
+        load_pairs(path)
+
+
+def test_the_shipped_table_still_loads_under_every_citation_check():
+    """All seven rows satisfy the gene/pair-id and host checks as shipped."""
+    assert len(PAIRS) == 7
+    for pair in PAIRS:
+        assert pair.gene.casefold() in pair.cpic_pair_id.casefold(), pair
+        assert pair.url.startswith("https://cpicpgx.org/"), pair
+
+
+def test_only_the_gene_is_pinned_to_the_pair_id_not_the_drug(tmp_path):
+    """CPIC names some guidelines after a drug class rather than a member.
+
+    "DPYD-fluoropyrimidines" is a legitimate pair id for a row whose drug is
+    capecitabine, so requiring the drug to appear in the pair id would reject a
+    correct row -- and a rejected row loads as nothing at all, which is the
+    false negative this module exists to avoid.
+    """
+    path = write_table(
+        tmp_path,
+        [
+            {
+                "gene": "DPYD",
+                "drug": "capecitabine",
+                "cpic_pair_id": "DPYD-fluoropyrimidines",
+                "url": "https://cpicpgx.org/guidelines/"
+                "guideline-for-fluoropyrimidines-and-dpyd/",
+            }
+        ],
+    )
+    assert [p.drug for p in load_pairs(path)] == ["capecitabine"]
 
 
 def test_load_pairs_rejects_unreadable_and_unparseable_files(tmp_path):

@@ -193,12 +193,17 @@ def query_drug(
     for pair in relevant:
         call = calls.get(pair.gene)
 
+        # The subject id is deliberately NOT interpolated into any explanation.
+        # It is caller-supplied text, and a subject id like "patient A - no
+        # interaction, safe, normal" would plant reassuring phrases inside a
+        # safety-critical string that consumers scan. The id belongs in the
+        # caller's context, next to the answer, never inside it.
         if not stored:
             results.append(
                 _unassessable(
                     pair,
-                    f"no record is stored for subject {subject_id!r}, so this "
-                    f"gene's genotype is unknown.",
+                    "no record is stored for this subject, so this gene's "
+                    "genotype is unknown.",
                 )
             )
             continue
@@ -207,8 +212,8 @@ def query_drug(
             results.append(
                 _unassessable(
                     pair,
-                    f"the latest stored record for subject {subject_id!r} holds "
-                    f"no call for this gene, so its genotype is unknown.",
+                    "the latest stored record holds no call for this gene, so "
+                    "its genotype is unknown.",
                 )
             )
             continue
