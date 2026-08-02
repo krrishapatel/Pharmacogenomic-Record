@@ -1,0 +1,37 @@
+{
+  "phenotypes": {
+    "CYP2C19": {
+      "gene": "CYP2C19",
+      "diplotypes": [
+        {
+          "allele1": {"name": "*1"},
+          "allele2": {"name": "*2"},
+          "label": "*1/*2",
+          "phenotypes": ["Intermediate Metabolizer"]
+        }
+      ]
+    },
+    "DPYD": {
+      "gene": "DPYD",
+      "diplotypes": [
+        {
+          "allele1": {"name": "Reference"},
+          "allele2": {"name": "Reference"},
+          "label": "Reference/Reference",
+          "phenotypes": ["Normal Metabolizer"]
+        }
+      ]
+    },
+    "TPMT": {
+      "gene": "TPMT",
+      "diplotypes": [
+        {
+          "allele1": null,
+          "allele2": null,
+          "label": "Unknown/Unknown",
+          "phenotypes": ["Indeterminate"]
+        }
+      ]
+    }
+  }
+}
