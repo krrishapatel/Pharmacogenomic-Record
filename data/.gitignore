@@ -1,0 +1,6 @@
+# Ignore everything by default -- genotype data must never be committed.
+*
+# ...except this file and the two committed reference tables.
+!.gitignore
+!pharmcat_positions_*.vcf
+!gene_drug_pairs.json
