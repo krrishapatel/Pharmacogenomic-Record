@@ -207,7 +207,7 @@ git commit -m "feat: scaffold package and pin PharmCAT 3.4.0 reference positions
 **Interfaces:**
 - Consumes: `data/pharmcat_positions_3.4.0.vcf` from Task 1
 - Produces:
-  - `class ReferencePosition` — frozen dataclass with fields `chrom: str`, `pos: int`, `rsid: str | None`, `ref: str`, `alt: list[str]`, `gene: str`
+  - `class ReferencePosition` — frozen dataclass with fields `chrom: str`, `pos: int`, `rsid: str | None`, `ref: str`, `alt: tuple[str, ...]`, `gene: str | None`
   - `def load_positions(path: Path) -> list[ReferencePosition]`
   - `def index_by_rsid(positions: list[ReferencePosition]) -> dict[str, ReferencePosition]`
   - `def genes_covered(positions: list[ReferencePosition]) -> set[str]`
@@ -250,8 +250,26 @@ def test_parsed_fields_match_the_file(positions):
     assert first.pos == 97078987
     assert first.rsid == "rs114096998"
     assert first.ref == "G"
-    assert first.alt == ["T"]
+    assert first.alt == ("T",)
     assert first.gene == "DPYD"
+
+
+def test_multi_allelic_alt_is_split(positions):
+    """57 of 1226 positions are multi-allelic; ALT must be split on commas.
+
+    Without this, a single test on a single-allelic row lets a broken
+    implementation (alt=(raw,)) pass, and downstream genotype matching in
+    the ingest step would silently fail on every multi-allelic position.
+    """
+    by_rsid = {p.rsid: p for p in positions if p.rsid}
+    assert by_rsid["rs3064744"].ref == "CAT"
+    assert by_rsid["rs3064744"].alt == ("C", "CATAT", "CATATAT")
+    assert len([p for p in positions if len(p.alt) > 1]) == 57
+
+
+def test_reference_position_is_hashable(positions):
+    """A tuple alt keeps positions usable in sets and as dict keys."""
+    assert len({p for p in positions}) == 1226
 
 
 def test_positions_without_rsid_get_none(positions):
@@ -287,7 +305,7 @@ def test_genes_covered(positions):
 
 def test_reference_position_is_immutable():
     p = ReferencePosition(
-        chrom="chr1", pos=1, rsid="rs1", ref="A", alt=["G"], gene="DPYD"
+        chrom="chr1", pos=1, rsid="rs1", ref="A", alt=("G",), gene="DPYD"
     )
     with pytest.raises(FrozenInstanceError):
         p.pos = 2
@@ -325,7 +343,7 @@ class ReferencePosition:
     pos: int
     rsid: str | None
     ref: str
-    alt: list[str]
+    alt: tuple[str, ...]
     gene: str | None
 
 
@@ -356,7 +374,7 @@ def load_positions(path: Path) -> list[ReferencePosition]:
                 pos=int(pos),
                 rsid=rsid if rsid.startswith("rs") else None,
                 ref=ref,
-                alt=alt.split(","),
+                alt=tuple(alt.split(",")),
                 gene=_parse_gene(info),
             )
         )
@@ -383,7 +401,11 @@ def genes_covered(positions: list[ReferencePosition]) -> set[str]:
     return {p.gene for p in positions if p.gene is not None}
 ```
 
-Note: `alt: list[str]` inside a frozen dataclass is intentional — frozen blocks attribute rebinding, which is what the immutability test checks. Do not switch to `tuple` without updating the test.
+Note: `alt` is a `tuple`, not a `list`. `frozen=True` blocks attribute
+rebinding but does NOT stop `position.alt.append(...)` on a contained list,
+and a list field also makes `ReferencePosition` unhashable — so it could
+never be put in a `set` or used as a dict key by a later task. A tuple fixes
+both.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -621,16 +643,16 @@ from pgxrecord.positions import ReferencePosition
 
 REF = [
     ReferencePosition(
-        chrom="chr1", pos=100, rsid="rs1", ref="G", alt=["T"], gene="DPYD"
+        chrom="chr1", pos=100, rsid="rs1", ref="G", alt=("T",), gene="DPYD"
     ),
     ReferencePosition(
-        chrom="chr1", pos=200, rsid="rs2", ref="C", alt=["A"], gene="DPYD"
+        chrom="chr1", pos=200, rsid="rs2", ref="C", alt=("A",), gene="DPYD"
     ),
     ReferencePosition(
-        chrom="chr10", pos=300, rsid="rs3", ref="C", alt=["T"], gene="CYP2C19"
+        chrom="chr10", pos=300, rsid="rs3", ref="C", alt=("T",), gene="CYP2C19"
     ),
     ReferencePosition(
-        chrom="chr22", pos=400, rsid=None, ref="A", alt=["G"], gene="CYP2D6"
+        chrom="chr22", pos=400, rsid=None, ref="A", alt=("G",), gene="CYP2D6"
     ),
 ]
 
@@ -2294,7 +2316,7 @@ requires resolving CPIC/PharmGKB data-use terms first.
 - [ ] **Step 6: Run the full suite**
 
 Run: `pytest -v`
-Expected: PASS, 51 tests across 8 files
+Expected: PASS, 53 tests across 8 files
 
 - [ ] **Step 7: Commit**
 

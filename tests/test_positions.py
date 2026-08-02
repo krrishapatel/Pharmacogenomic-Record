@@ -31,8 +31,26 @@ def test_parsed_fields_match_the_file(positions):
     assert first.pos == 97078987
     assert first.rsid == "rs114096998"
     assert first.ref == "G"
-    assert first.alt == ["T"]
+    assert first.alt == ("T",)
     assert first.gene == "DPYD"
+
+
+def test_multi_allelic_alt_is_split(positions):
+    """57 of 1226 positions are multi-allelic; ALT must be split on commas.
+
+    Without this, a single test on a single-allelic row lets a broken
+    implementation (alt=(raw,)) pass, and downstream genotype matching in
+    the ingest step would silently fail on every multi-allelic position.
+    """
+    by_rsid = {p.rsid: p for p in positions if p.rsid}
+    assert by_rsid["rs3064744"].ref == "CAT"
+    assert by_rsid["rs3064744"].alt == ("C", "CATAT", "CATATAT")
+    assert len([p for p in positions if len(p.alt) > 1]) == 57
+
+
+def test_reference_position_is_hashable(positions):
+    """A tuple alt keeps positions usable in sets and as dict keys."""
+    assert len({p for p in positions}) == 1226
 
 
 def test_positions_without_rsid_get_none(positions):
@@ -68,7 +86,7 @@ def test_genes_covered(positions):
 
 def test_reference_position_is_immutable():
     p = ReferencePosition(
-        chrom="chr1", pos=1, rsid="rs1", ref="A", alt=["G"], gene="DPYD"
+        chrom="chr1", pos=1, rsid="rs1", ref="A", alt=("G",), gene="DPYD"
     )
     with pytest.raises(FrozenInstanceError):
         p.pos = 2

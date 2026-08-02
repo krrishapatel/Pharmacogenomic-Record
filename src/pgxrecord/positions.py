@@ -20,7 +20,7 @@ class ReferencePosition:
     pos: int
     rsid: str | None
     ref: str
-    alt: list[str]
+    alt: tuple[str, ...]
     gene: str | None
 
 
@@ -51,7 +51,7 @@ def load_positions(path: Path) -> list[ReferencePosition]:
                 pos=int(pos),
                 rsid=rsid if rsid.startswith("rs") else None,
                 ref=ref,
-                alt=alt.split(","),
+                alt=tuple(alt.split(",")),
                 gene=_parse_gene(info),
             )
         )
