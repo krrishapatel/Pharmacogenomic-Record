@@ -1,0 +1,44 @@
+[
+  {
+    "gene": "CYP2C19",
+    "drug": "clopidogrel",
+    "cpic_pair_id": "CYP2C19-clopidogrel",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-clopidogrel-and-cyp2c19/"
+  },
+  {
+    "gene": "CYP2D6",
+    "drug": "codeine",
+    "cpic_pair_id": "CYP2D6-codeine",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-codeine-and-cyp2d6/"
+  },
+  {
+    "gene": "DPYD",
+    "drug": "fluorouracil",
+    "cpic_pair_id": "DPYD-fluorouracil",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-fluoropyrimidines-and-dpyd/"
+  },
+  {
+    "gene": "TPMT",
+    "drug": "azathioprine",
+    "cpic_pair_id": "TPMT-azathioprine",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-thiopurines-and-tpmt-and-nudt15/"
+  },
+  {
+    "gene": "SLCO1B1",
+    "drug": "simvastatin",
+    "cpic_pair_id": "SLCO1B1-simvastatin",
+    "url": "https://cpicpgx.org/guidelines/cpic-guideline-for-statins/"
+  },
+  {
+    "gene": "CYP2C9",
+    "drug": "warfarin",
+    "cpic_pair_id": "CYP2C9-warfarin",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-warfarin-and-cyp2c9-and-vkorc1/"
+  },
+  {
+    "gene": "VKORC1",
+    "drug": "warfarin",
+    "cpic_pair_id": "VKORC1-warfarin",
+    "url": "https://cpicpgx.org/guidelines/guideline-for-warfarin-and-cyp2c9-and-vkorc1/"
+  }
+]
