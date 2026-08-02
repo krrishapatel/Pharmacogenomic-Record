@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pgxrecord.ingest.raw import RawCall
 from pgxrecord.ingest.vcf import build_vcf
 from pgxrecord.positions import ReferencePosition
@@ -82,11 +84,18 @@ def test_coverage_report_distinguishes_partial_from_absent(tmp_path):
     assert "DPYD" not in report.genes_fully_uncovered
 
 
-def test_gene_with_no_rsid_positions_is_always_fully_uncovered(tmp_path):
-    """CYP2D6 relies on positions with no rsID, so an array can never cover it.
+def test_gene_whose_positions_all_lack_rsids_is_fully_uncovered(tmp_path):
+    """A gene reachable only via rsID-less positions can never be covered.
 
-    This is the single most important coverage case: CYP2D6 is among the most
-    clinically significant PGx genes and consumer arrays cannot resolve it.
+    This tests the join mechanism, not a claim about any specific gene. In the
+    real 3.4.0 reference NO gene is entirely rsID-less -- CYP2D6, for
+    instance, has 146 of 157 positions carrying rsIDs. CYP2D6 is genuinely
+    unresolvable from a consumer array, but because it depends on copy-number
+    and structural variation, which is a different limitation than the rsID
+    join and is not something this function can detect.
+
+    The synthetic CYP2D6 entry in REF models the rsID-less case so the
+    mechanism is covered; do not read it as a fact about real CYP2D6 data.
     """
     out = tmp_path / "out.vcf"
     calls = [RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG")]
@@ -94,6 +103,51 @@ def test_gene_with_no_rsid_positions_is_always_fully_uncovered(tmp_path):
     report = build_vcf(calls, REF, out)
 
     assert "CYP2D6" in report.genes_fully_uncovered
+
+
+def test_unjoinable_rsid_less_positions_are_counted(tmp_path):
+    """The 208 rsID-less positions are in neither covered nor uncovered.
+
+    They have no rsID to key on, so they cannot appear in either rsID set --
+    but they are real coverage gaps and must be visible, not silently
+    dropped. Downstream code must treat "in neither set" as uncovered.
+    """
+    out = tmp_path / "out.vcf"
+    calls = [RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG")]
+
+    report = build_vcf(calls, REF, out)
+
+    # REF has one rsid=None position (the synthetic CYP2D6 entry).
+    assert report.unjoinable_positions == 1
+    assert report.covered_rsids | report.uncovered_rsids == {"rs1", "rs2", "rs3"}
+
+
+def test_coverage_report_cannot_be_mutated(tmp_path):
+    """frozen=True alone would not stop report.covered_rsids.add(...)."""
+    out = tmp_path / "out.vcf"
+    report = build_vcf(
+        [RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG")], REF, out
+    )
+
+    assert isinstance(report.covered_rsids, frozenset)
+    with pytest.raises(AttributeError):
+        report.covered_rsids.add("rs99")
+
+
+def test_partially_covered_gene_is_not_evidence_of_absence(tmp_path):
+    """genes_partially_covered means >=1 position, never "fully assessed".
+
+    DPYD has two positions in REF and only one is covered. Treating that as
+    a complete assessment would let a missed position read as "no
+    interaction found" -- the exact collapse the invariant forbids.
+    """
+    out = tmp_path / "out.vcf"
+    calls = [RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG")]
+
+    report = build_vcf(calls, REF, out)
+
+    assert "DPYD" in report.genes_partially_covered
+    assert "rs2" in report.uncovered_rsids  # the other DPYD position
 
 
 def test_untranslatable_genotype_counts_as_uncovered(tmp_path):

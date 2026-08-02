@@ -52,12 +52,23 @@ def _contig_lines(positions: list[ReferencePosition]) -> str:
 
 @dataclass(frozen=True)
 class CoverageReport:
-    """Which reference positions the array actually informed."""
+    """Which reference positions the array actually informed.
 
-    covered_rsids: set[str]
-    uncovered_rsids: set[str]
-    genes_fully_uncovered: set[str]
-    genes_partially_covered: set[str]
+    Fields are frozensets: `frozen=True` stops rebinding but not
+    `report.covered_rsids.add(...)`, and a mutable set field would also make
+    the report unhashable and unsafe to share.
+
+    `unjoinable_positions` is the count of reference positions that have no
+    rsID at all (208 in 3.4.0). They appear in neither covered nor uncovered
+    because they have no rsID to key on -- but they are real gaps in
+    coverage, so the count is surfaced rather than silently dropped.
+    """
+
+    covered_rsids: frozenset[str]
+    uncovered_rsids: frozenset[str]
+    genes_fully_uncovered: frozenset[str]
+    genes_partially_covered: frozenset[str]
+    unjoinable_positions: int
 
 
 def translate_genotype(genotype: str, ref: ReferencePosition) -> str | None:
@@ -122,8 +133,9 @@ def build_vcf(
     all_genes = {p.gene for p in positions if p.gene is not None}
 
     return CoverageReport(
-        covered_rsids=covered,
-        uncovered_rsids=all_joinable - covered,
-        genes_fully_uncovered=all_genes - genes_covered_partly,
-        genes_partially_covered=genes_covered_partly,
+        covered_rsids=frozenset(covered),
+        uncovered_rsids=frozenset(all_joinable - covered),
+        genes_fully_uncovered=frozenset(all_genes - genes_covered_partly),
+        genes_partially_covered=frozenset(genes_covered_partly),
+        unjoinable_positions=len(positions) - len(by_rsid),
     )
