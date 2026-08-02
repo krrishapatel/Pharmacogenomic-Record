@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pgxrecord import PHARMCAT_IMAGE
+from pharmacogenomic_record import PHARMCAT_IMAGE
 
 CALLED = "called"
 NOT_COVERED = "not_covered"

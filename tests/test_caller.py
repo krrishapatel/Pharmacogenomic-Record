@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from pgxrecord.caller import GeneCall, PharmcatError, parse_phenotype_json, run_pharmcat
+from pharmacogenomic_record.caller import GeneCall, PharmcatError, parse_phenotype_json, run_pharmcat
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SAMPLE = FIXTURES / "pharmcat_phenotype_sample.json"
@@ -697,6 +697,6 @@ def test_run_pharmcat_raises_when_docker_missing(tmp_path, monkeypatch):
     ],
 )
 def test_vcf_basename_strips_double_extension(name, expected):
-    from pgxrecord.caller import _vcf_basename
+    from pharmacogenomic_record.caller import _vcf_basename
 
     assert _vcf_basename(Path("/tmp") / name) == expected

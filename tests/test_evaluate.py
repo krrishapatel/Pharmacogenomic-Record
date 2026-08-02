@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from pgxrecord import PHARMCAT_VERSION
-from pgxrecord.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
-from pgxrecord.evaluate import (
+from pharmacogenomic_record import PHARMCAT_VERSION
+from pharmacogenomic_record.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
+from pharmacogenomic_record.evaluate import (
     CANNOT_ASSESS,
     GUIDANCE_FOUND,
     NO_GUIDANCE_FOR_PAIR,
@@ -26,13 +26,13 @@ from pgxrecord.evaluate import (
     overall_outcome,
     query_drug,
 )
-from pgxrecord.guidelines import (
+from pharmacogenomic_record.guidelines import (
     GuidelineRef,
     GuidelineTableError,
     find_pairs_for_drug,
     load_pairs,
 )
-from pgxrecord.store import CorruptRecordError, RecordStore
+from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
 PAIRS_PATH = Path(__file__).resolve().parents[1] / "data/gene_drug_pairs.json"
 PAIRS = load_pairs(PAIRS_PATH)

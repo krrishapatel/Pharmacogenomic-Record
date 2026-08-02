@@ -3,9 +3,9 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 import pytest
 
-from pgxrecord import PHARMCAT_VERSION
-from pgxrecord.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
-from pgxrecord.store import CorruptRecordError, RecordStore
+from pharmacogenomic_record import PHARMCAT_VERSION
+from pharmacogenomic_record.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
+from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
 # Every scratch database lives in pytest's tmp_path; this file reads no
 # fixtures from disk, so there is deliberately no fixtures path here. The
@@ -1096,7 +1096,7 @@ def test_latest_opens_exactly_one_connection(store):
         opened.append(args[0] if args else kwargs.get("database"))
         return real_connect(*args, **kwargs)
 
-    import pgxrecord.store as store_module
+    import pharmacogenomic_record.store as store_module
 
     original = store_module.sqlite3.connect
     store_module.sqlite3.connect = counting_connect

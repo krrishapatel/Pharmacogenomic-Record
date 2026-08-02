@@ -1,5 +1,5 @@
 [project]
-name = "pgxrecord"
+name = "pharmacogenomic_record"
 version = "0.1.0"
 description = "Longitudinal pharmacogenomic record over PharmCAT"
 requires-python = ">=3.11"

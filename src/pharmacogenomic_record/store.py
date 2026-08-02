@@ -28,10 +28,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pgxrecord import PHARMCAT_VERSION
-from pgxrecord.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
+from pharmacogenomic_record import PHARMCAT_VERSION
+from pharmacogenomic_record.caller import CALLED, INDETERMINATE, NOT_COVERED, GeneCall
 
-# The closed coverage vocabulary, taken from pgxrecord.caller rather than
+# The closed coverage vocabulary, taken from pharmacogenomic_record.caller rather than
 # re-spelled here: two copies of a vocabulary is one copy too many.
 _COVERAGE_VALUES = (CALLED, NOT_COVERED, INDETERMINATE)
 _COVERAGE_LIST = ", ".join(f"'{value}'" for value in _COVERAGE_VALUES)

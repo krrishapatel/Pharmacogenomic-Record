@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from pgxrecord.ingest.raw import RawCall
-from pgxrecord.ingest.vcf import build_vcf
-from pgxrecord.positions import ReferencePosition
+from pharmacogenomic_record.ingest.raw import RawCall
+from pharmacogenomic_record.ingest.vcf import build_vcf
+from pharmacogenomic_record.positions import ReferencePosition
 
 REF = [
     ReferencePosition(
@@ -60,7 +60,7 @@ def test_contigs_and_rows_are_in_natural_chromosome_order(tmp_path):
 
 def test_genotype_translation():
     """Raw allele letters become VCF numeric genotypes against the ref allele."""
-    from pgxrecord.ingest.vcf import translate_genotype
+    from pharmacogenomic_record.ingest.vcf import translate_genotype
 
     ref = REF[0]  # ref=G alt=T
     assert translate_genotype("GG", ref) == "0/0"

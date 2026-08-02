@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from pgxrecord import POSITIONS_FILENAME
+from pharmacogenomic_record import POSITIONS_FILENAME
 from dataclasses import FrozenInstanceError
 
-from pgxrecord.positions import (
+from pharmacogenomic_record.positions import (
     ReferencePosition,
     genes_covered,
     index_by_rsid,

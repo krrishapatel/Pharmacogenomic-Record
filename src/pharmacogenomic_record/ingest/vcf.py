@@ -14,11 +14,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pgxrecord.ingest.raw import RawCall
-from pgxrecord.positions import ReferencePosition, index_by_rsid
+from pharmacogenomic_record.ingest.raw import RawCall
+from pharmacogenomic_record.positions import ReferencePosition, index_by_rsid
 
 _VCF_META = """##fileformat=VCFv4.2
-##source=pgxrecord
+##source=pharmacogenomic_record
 ##reference=GRCh38
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 """

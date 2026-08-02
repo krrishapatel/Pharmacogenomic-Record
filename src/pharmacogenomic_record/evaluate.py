@@ -29,9 +29,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from pgxrecord.caller import CALLED, GeneCall
-from pgxrecord.guidelines import GuidelineRef, find_pairs_for_drug, normalize_drug
-from pgxrecord.store import CorruptRecordError, RecordStore
+from pharmacogenomic_record.caller import CALLED, GeneCall
+from pharmacogenomic_record.guidelines import GuidelineRef, find_pairs_for_drug, normalize_drug
+from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
 GUIDANCE_FOUND = "guidance_found"
 NO_GUIDANCE_FOR_PAIR = "no_guidance_for_pair"

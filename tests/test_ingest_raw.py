@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pgxrecord.ingest.raw import RawCall, UnsupportedRawFile, parse_23andme
+from pharmacogenomic_record.ingest.raw import RawCall, UnsupportedRawFile, parse_23andme
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

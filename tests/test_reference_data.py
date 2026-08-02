@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pgxrecord import POSITIONS_FILENAME
+from pharmacogenomic_record import POSITIONS_FILENAME
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
