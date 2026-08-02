@@ -39,11 +39,34 @@ def test_parses_called_genes():
     )
 
 
-def test_indeterminate_phenotype_is_not_called():
+def test_indeterminate_phenotype_is_not_called(tmp_path):
     """PharmCAT saying 'Indeterminate' is not a normal-metabolizer result.
 
-    The indeterminate state must also null both payload fields, otherwise a
-    leaked label reads as a call downstream.
+    Both alleles are named here, so the structural no-call branch cannot fire:
+    this reaches the phenotype-marker branch and nothing else. The indeterminate
+    state must also null both payload fields, otherwise a leaked label reads as
+    a call downstream.
+    """
+    path = write_payload(
+        tmp_path,
+        {"TPMT": {"gene": "TPMT", "diplotypes": [
+            diplotype("*1/*3A", "*1", "*3A", ["Indeterminate"])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+def test_committed_fixture_null_allele_gene_is_indeterminate():
+    """The fixture's TPMT has null alleles, so the STRUCTURAL branch fires.
+
+    Kept separate from the phenotype-marker test above: this one pins the
+    committed realistic sample, where the no-call is expressed structurally.
     """
     calls = parse_phenotype_json(
         SAMPLE, uncovered_genes=set(), partially_covered_genes=set()
@@ -194,6 +217,193 @@ def test_identical_candidate_labels_still_called(tmp_path):
     assert call.phenotype == "Intermediate Metabolizer"
 
 
+def test_same_label_conflicting_phenotypes_is_indeterminate(tmp_path):
+    """Agreeing on the label is not agreeing on the call.
+
+    Two candidates labelled *1/*2 carrying Poor and Normal Metabolizer are
+    clinically opposite. Keying ambiguity on the label alone kept whichever
+    happened to be first and silently discarded the other.
+    """
+    path = write_payload(
+        tmp_path,
+        {
+            "CYP2C19": {
+                "gene": "CYP2C19",
+                "diplotypes": [
+                    diplotype("*1/*2", "*1", "*2", ["Poor Metabolizer"]),
+                    diplotype("*1/*2", "*1", "*2", ["Normal Metabolizer"]),
+                ],
+            }
+        },
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+def test_same_label_conflicting_allele_names_is_indeterminate(tmp_path):
+    """Two candidates can share a label while naming different alleles."""
+    path = write_payload(
+        tmp_path,
+        {
+            "CYP2C19": {
+                "gene": "CYP2C19",
+                "diplotypes": [
+                    diplotype("*1/*2", "*1", "*2", ["Intermediate Metabolizer"]),
+                    diplotype("*1/*2", "*2", "*1", ["Intermediate Metabolizer"]),
+                ],
+            }
+        },
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+
+
+def test_a_no_call_candidate_anywhere_blocks_the_call(tmp_path):
+    """The structural no-call check applies to EVERY candidate, not just the first.
+
+    A named candidate followed by an all-null candidate under the same label
+    used to be reported as a confident call, discarding the no-call entirely.
+    """
+    path = write_payload(
+        tmp_path,
+        {
+            "CYP2C19": {
+                "gene": "CYP2C19",
+                "diplotypes": [
+                    diplotype("*1/*2", "*1", "*2", ["Normal Metabolizer"]),
+                    {
+                        "allele1": None,
+                        "allele2": None,
+                        "label": "*1/*2",
+                        "phenotypes": ["Indeterminate"],
+                    },
+                ],
+            }
+        },
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+def test_non_string_label_on_a_later_candidate_raises(tmp_path):
+    """Unparseable output must raise wherever it appears, not degrade quietly.
+
+    Only the first candidate's label used to be type-checked, so a non-string
+    label further down came out as a plain 'indeterminate'.
+    """
+    path = write_payload(
+        tmp_path,
+        {
+            "CYP2C19": {
+                "gene": "CYP2C19",
+                "diplotypes": [
+                    diplotype("*1/*2", "*1", "*2", ["Normal Metabolizer"]),
+                    {"label": 7},
+                ],
+            }
+        },
+    )
+    with pytest.raises(PharmcatError, match="non-string label"):
+        parse_phenotype_json(
+            path, uncovered_genes=set(), partially_covered_genes=set()
+        )
+
+
+def test_named_alleles_with_a_null_label_is_indeterminate(tmp_path):
+    """A call needs something to report. Named alleles alone are not enough."""
+    path = write_payload(
+        tmp_path,
+        {"CYP2C19": {"gene": "CYP2C19", "diplotypes": [
+            diplotype(None, "*1", "*2", ["Normal Metabolizer"])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+@pytest.mark.parametrize(
+    "phenotype",
+    ["No Call", "Not Available", "No Data", "NA", "Undetermined", "Not Assigned"],
+)
+def test_additional_indeterminate_markers_downgrade_a_complete_diplotype(
+    tmp_path, phenotype
+):
+    """These real PharmCAT strings mean 'no result' and must not read as calls."""
+    path = write_payload(
+        tmp_path,
+        {"CYP2C19": {"gene": "CYP2C19", "diplotypes": [
+            diplotype("*1/*2", "*1", "*2", [phenotype])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+@pytest.mark.parametrize(
+    "phenotype",
+    [
+        "Normal Metabolizer",
+        "Intermediate Metabolizer",
+        "Poor Metabolizer",
+        "Ultrarapid Metabolizer",
+        "Normal Function",
+        "No Function",
+        "Decreased Function",
+        "Increased Function",
+        "Possible Decreased Function",
+        "Deficient",
+        "Deficient with CNSHA",
+        "Variable",
+        "Uncertain Susceptibility",
+        "Malignant Hyperthermia Susceptibility",
+    ],
+)
+def test_legitimate_cpic_phenotypes_are_never_downgraded(tmp_path, phenotype):
+    """The marker list must not swallow real results.
+
+    'No Function' vs the 'No Data'/'No Call' markers is the sharp edge: they
+    share the leading 'no' token, and only whole-token run matching keeps a
+    no-function allele -- clinically actionable -- out of the marker list.
+    """
+    path = write_payload(
+        tmp_path,
+        {"CYP2C9": {"gene": "CYP2C9", "diplotypes": [
+            diplotype("*2/*3", "*2", "*3", [phenotype])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path, uncovered_genes=set(), partially_covered_genes=set()
+    )
+
+    assert call.coverage == "called"
+    assert call.diplotype == "*2/*3"
+    assert call.phenotype == phenotype
+
+
 @pytest.mark.parametrize(
     ("allele1", "allele2", "label"),
     [
@@ -338,11 +548,26 @@ def test_no_gene_is_reported_twice():
     assert len(genes) == len(set(genes))
 
 
-def test_every_coverage_value_is_one_of_three_states():
+def test_the_three_coverage_states_do_not_collapse():
+    """Assert the exact state per gene, not a subset of the allowed values.
+
+    A subset assertion passes even if every gene collapsed to one state, which
+    is precisely the failure this software must never have.
+    """
     calls = parse_phenotype_json(
         SAMPLE, uncovered_genes={"CYP2D6"}, partially_covered_genes={"NAT2"}
     )
-    assert {c.coverage for c in calls} <= {"called", "not_covered", "indeterminate"}
+    states = {c.gene: c.coverage for c in calls}
+
+    assert states == {
+        "CYP2C19": "called",       # fully covered, unambiguous
+        "DPYD": "called",          # fully covered, unambiguous
+        "TPMT": "indeterminate",   # null alleles in the fixture
+        "CYP2D6": "not_covered",   # declared uncovered, absent from output
+        "NAT2": "indeterminate",   # declared partially covered
+    }
+    # All three states are genuinely present, so none has swallowed the others.
+    assert set(states.values()) == {"called", "not_covered", "indeterminate"}
 
 
 def test_malformed_json_raises(tmp_path):
@@ -354,7 +579,14 @@ def test_malformed_json_raises(tmp_path):
         )
 
 
-@pytest.mark.parametrize("payload", [{"totally": "wrong"}, {}, {"phenotypes": None}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"totally": "wrong"},   # key absent -> phenotypes is None
+        {"phenotypes": []},     # present but a list, a distinct wrong shape
+    ],
+    ids=["key-absent", "list-not-object"],
+)
 def test_wrong_shaped_payload_raises(tmp_path, payload):
     """Returning [] here is indistinguishable from 'PharmCAT called nothing'."""
     bad = tmp_path / "wrong.json"

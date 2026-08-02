@@ -34,9 +34,23 @@ INDETERMINATE = "indeterminate"
 # label: labels have the form "allele1/allele2", so a substring marker
 # containing "/" straddles the separator ("n/a" is a substring of
 # "Canton/Aures", a real and clinically actionable G6PD-deficient result).
-# Matching is whole-token, not raw substring, so "No Function" does not trip
-# "no result".
-_INDETERMINATE_PHENOTYPES = ("indeterminate", "unknown", "n/a", "no result")
+#
+# Matching is whole-token (see _tokens), not raw substring. That is what keeps
+# the real CPIC vocabulary intact: "No Function" and "No Data" share the leading
+# "no" token but are different token runs, so a no-function allele -- a
+# clinically actionable result -- is never downgraded to "we have no data".
+_INDETERMINATE_PHENOTYPES = (
+    "indeterminate",
+    "unknown",
+    "n/a",
+    "na",
+    "no result",
+    "no call",
+    "no data",
+    "not available",
+    "not assigned",
+    "undetermined",
+)
 _TIMEOUT_SECONDS = 900
 
 
@@ -136,27 +150,89 @@ def _phenotype_is_indeterminate(phenotype: str | None) -> bool:
     return False
 
 
-def _allele_is_called(allele: object, gene: str) -> bool:
-    """True if an allele slot holds a real, named allele.
+def _allele_name(allele: object, gene: str) -> str | None:
+    """The real, named allele in a slot, or None if the slot is a no-call.
 
     A null allele, or an allele whose name is null/missing/blank, is PharmCAT's
     representation of a no-call -- this is the structural signal, and it is the
     primary one. Anything that is neither null nor a dict is unparseable.
+
+    The name is returned, not just a boolean, because two candidate diplotypes
+    may share a label while naming different alleles; the caller compares names
+    to decide whether the candidates may collapse into one call.
     """
     if allele is None:
-        return False
+        return None
     if not isinstance(allele, dict):
         raise PharmcatError(
             f"PharmCAT output for {gene} has a non-object allele: {allele!r}"
         )
     name = allele.get("name")
     if name is None:
-        return False
+        return None
     if not isinstance(name, str):
         raise PharmcatError(
             f"PharmCAT output for {gene} has a non-string allele name: {name!r}"
         )
-    return bool(name.strip())
+    return name if name.strip() else None
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One candidate diplotype, reduced to exactly what can reach the output."""
+
+    label: str | None
+    allele1: str | None
+    allele2: str | None
+    phenotypes: tuple[str, ...]
+
+    @property
+    def is_no_call(self) -> bool:
+        """True if either allele slot is unnamed -- a structural no-call."""
+        return self.allele1 is None or self.allele2 is None
+
+    @property
+    def phenotype(self) -> str | None:
+        return self.phenotypes[0] if self.phenotypes else None
+
+
+def _candidate(gene: str, candidate: object) -> _Candidate:
+    """Validate one candidate diplotype and reduce it to its output fields.
+
+    Every candidate is validated, not just the first: an unparseable label,
+    allele or phenotype anywhere in the list means the output cannot be trusted.
+    """
+    if not isinstance(candidate, dict):
+        raise PharmcatError(
+            f"PharmCAT output for {gene} has a non-object diplotype: {candidate!r}"
+        )
+
+    label = candidate.get("label")
+    if label is not None and not isinstance(label, str):
+        raise PharmcatError(
+            f"PharmCAT output for {gene} has a non-string label: {label!r}"
+        )
+
+    phenotypes = candidate.get("phenotypes")
+    if phenotypes is None:
+        phenotypes = []
+    if not isinstance(phenotypes, list):
+        raise PharmcatError(
+            f"PharmCAT output for {gene} has non-list phenotypes: {phenotypes!r}"
+        )
+    for phenotype in phenotypes:
+        if not isinstance(phenotype, str):
+            raise PharmcatError(
+                f"PharmCAT output for {gene} has a non-string phenotype: "
+                f"{phenotype!r}"
+            )
+
+    return _Candidate(
+        label=label,
+        allele1=_allele_name(candidate.get("allele1"), gene),
+        allele2=_allele_name(candidate.get("allele2"), gene),
+        phenotypes=tuple(phenotypes),
+    )
 
 
 def _resolve(gene: str, entry: object) -> GeneCall:
@@ -165,13 +241,21 @@ def _resolve(gene: str, entry: object) -> GeneCall:
     Classification order, strictest first:
 
     1. No candidate diplotypes at all -> indeterminate.
-    2. More than one candidate with differing labels -> indeterminate. Unphased
-       data consistent with several allele combinations (routine for CYP2D6 and
-       NAT2) is genuine ambiguity: "positions present, allele unresolvable".
-       Identical labels are not ambiguity, so they collapse.
-    3. Either allele missing or unnamed -> indeterminate (structural no-call).
+    2. Candidates that disagree on anything reaching the output -> indeterminate.
+       Unphased data consistent with several allele combinations (routine for
+       CYP2D6 and NAT2) is genuine ambiguity: "positions present, allele
+       unresolvable". Candidates may collapse into one call only when they are
+       identical in label, both allele names and phenotypes -- agreeing on the
+       label alone is not enough, because two candidates can share a label while
+       carrying opposite phenotypes, and keeping either one would discard a
+       clinically contradictory result.
+    3. ANY candidate with a missing or unnamed allele -> indeterminate
+       (structural no-call). PharmCAT emitting a no-call candidate alongside a
+       named one means it could not settle the gene, so no candidate may be
+       promoted to a call.
     4. Phenotype string says indeterminate -> indeterminate.
-    5. Otherwise called.
+    5. Empty or missing label -> indeterminate; there is nothing to report.
+    6. Otherwise called.
 
     The diplotype *label* is never pattern-matched; see _INDETERMINATE_PHENOTYPES.
     """
@@ -187,53 +271,32 @@ def _resolve(gene: str, entry: object) -> GeneCall:
         raise PharmcatError(
             f"PharmCAT output for {gene} has non-list diplotypes: {diplotypes!r}"
         )
-    for candidate in diplotypes:
-        if not isinstance(candidate, dict):
-            raise PharmcatError(
-                f"PharmCAT output for {gene} has a non-object diplotype: "
-                f"{candidate!r}"
-            )
+
+    candidates = [_candidate(gene, candidate) for candidate in diplotypes]
 
     indeterminate = GeneCall(gene, None, None, INDETERMINATE)
-    if not diplotypes:
+    if not candidates:
         return indeterminate
 
-    labels = {candidate.get("label") for candidate in diplotypes}
-    if len(labels) > 1:
+    # Equivalence is on the whole candidate -- label, both allele names and
+    # phenotypes -- so a call survives only when every candidate agrees on
+    # everything that would reach the output.
+    if len(set(candidates)) > 1:
+        return indeterminate
+    # Every candidate is checked, not just the first. Given the equivalence gate
+    # above the candidates are already identical here, so this is defence in
+    # depth rather than an independently reachable branch -- it keeps the
+    # "no candidate may be a no-call" rule true even if that gate is loosened.
+    if any(candidate.is_no_call for candidate in candidates):
         return indeterminate
 
-    first = diplotypes[0]
-    label = first.get("label")
-    if label is not None and not isinstance(label, str):
-        raise PharmcatError(
-            f"PharmCAT output for {gene} has a non-string label: {label!r}"
-        )
-
-    if not (
-        _allele_is_called(first.get("allele1"), gene)
-        and _allele_is_called(first.get("allele2"), gene)
-    ):
+    call = candidates[0]
+    if _phenotype_is_indeterminate(call.phenotype):
+        return indeterminate
+    if not call.label:
         return indeterminate
 
-    phenotypes = first.get("phenotypes")
-    if phenotypes is None:
-        phenotypes = []
-    if not isinstance(phenotypes, list):
-        raise PharmcatError(
-            f"PharmCAT output for {gene} has non-list phenotypes: {phenotypes!r}"
-        )
-    phenotype = phenotypes[0] if phenotypes else None
-    if phenotype is not None and not isinstance(phenotype, str):
-        raise PharmcatError(
-            f"PharmCAT output for {gene} has a non-string phenotype: {phenotype!r}"
-        )
-
-    if _phenotype_is_indeterminate(phenotype):
-        return indeterminate
-    if not label:
-        return indeterminate
-
-    return GeneCall(gene, label, phenotype, CALLED)
+    return GeneCall(gene, call.label, call.phenotype, CALLED)
 
 
 def parse_phenotype_json(
