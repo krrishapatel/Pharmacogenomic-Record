@@ -27,6 +27,7 @@ module says only where to look, never what to do.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from pharmacogenomic_record.guidelines import (
@@ -58,7 +59,7 @@ class AffectedRecord:
 
 def affected_by_guideline_change(
     store: RecordStore,
-    changed_pair_ids: set[str],
+    changed_pair_ids: Iterable[str],
     pairs: list[GuidelineRef],
 ) -> list[AffectedRecord]:
     """Find stored records involving gene-drug pairs whose guidance changed.
@@ -70,35 +71,32 @@ def affected_by_guideline_change(
     once: the store is append-only, so a re-ingested gene has many rows and one
     subject.
     """
-    # Checked before anything else, and loudly, because the failure is uniform:
-    # with no pairs to match against, every revision in existence comes back
-    # "nobody affected". `load_pairs` refuses to return an empty table, so this
-    # only catches a caller that assembled the list by hand -- but this report
-    # is consulted precisely when someone wants to know what moved, and a
-    # confident empty answer is the one shape they cannot check.
+    # Checked first and loudly, because the failure is uniform: with no pairs to
+    # match against, every revision in existence comes back "nobody affected",
+    # and a confident empty answer is the one shape a reader cannot check.
+    # `load_pairs` never returns an empty table, so this catches a hand-built one.
     if not pairs:
         raise ValueError(
             "refusing to diff against an empty gene-drug pair table: every "
             "guideline revision would be reported as affecting nobody"
         )
-    # There is deliberately no `if not changed_pair_ids: return []` short-circuit
-    # here. It would be unreachable as a behaviour -- an empty set matches no
-    # pair, so the code below already returns [] -- and it would be actively
-    # harmful for anything else falsy: `changed_pair_ids=None` from a caller
-    # whose "what changed" lookup came back empty-handed would be answered
-    # "nobody affected" instead of raising. A caller bug must not be laundered
-    # into a confident negative in this particular report.
-    #
-    # Both sides are normalized, and that is the difference between a report and
-    # an empty one. The stored id is canonicalized on load (stripped, case
-    # preserved because it is displayed); the caller's id has been through
-    # nothing at all, so it arrives however a release note, a spreadsheet cell
-    # or a shell argument spelled it. Compared raw, "cyp2c19-clopidogrel" or
-    # "CYP2C19-clopidogrel " matches no row, and the function reports that
-    # nobody's results changed meaning -- a false negative in the exact report
-    # someone opened to find out otherwise. `normalize_pair_id` is the same
-    # comparison form `load_pairs` keys its uniqueness check on, so one logical
-    # pair cannot be two things here and one thing there.
+    # A malformed change set must raise, never answer "nobody affected". Hence no
+    # `if not changed_pair_ids: return []` (which would launder `None` into that
+    # answer instead of raising below), and hence this: a bare "CYP2C9-warfarin"
+    # for {"CYP2C9-warfarin"} iterates into characters matching no pair. An empty
+    # collection is different -- it legitimately returns [].
+    if isinstance(changed_pair_ids, (str, bytes)):
+        raise TypeError(
+            f"changed pair ids must be a collection of ids, not a single "
+            f"{type(changed_pair_ids).__name__}; iterating one would compare "
+            f"its characters and report that the revision affected nobody"
+        )
+    # Normalized on both sides, which is the difference between a report and an
+    # empty one: the stored id was canonicalized on load, the caller's arrives
+    # however a release note or shell argument spelled it, and compared raw
+    # "cyp2c19-clopidogrel" matches no row and nobody is reported. This is the
+    # comparison form `load_pairs` keys uniqueness on, so one logical pair cannot
+    # be two things here and one thing there.
     changed = {normalize_pair_id(pair_id) for pair_id in changed_pair_ids}
 
     genes_to_pairs: dict[str, set[str]] = {}
@@ -123,16 +121,18 @@ def affected_by_guideline_change(
                     f"subjects even for subjects genotyped for "
                     f"{normalize_gene(pair.gene)!r}"
                 )
-            # A set, so a table listing one logical pair twice cannot make one
-            # changed pair look like two in the report.
+            # A set, so a repeated id contributes one entry -- but byte-identical
+            # ids only: a case twin would still report one logical pair as two.
+            # What rules that out is `load_pairs` keying uniqueness on
+            # `normalize_pair_id`, so it cannot emit both spellings.
             genes_to_pairs.setdefault(pair.gene, set()).add(pair.cpic_pair_id)
 
     affected: list[AffectedRecord] = []
     for gene, pair_ids in sorted(genes_to_pairs.items()):
-        # `subjects_with_gene` already returns distinct subjects, sorted, across
-        # every record rather than only the latest -- which is what makes a
-        # re-ingested subject one line here and a subject whose only genotyping
-        # predates the revision still a line at all.
+        # `subjects_with_gene` returns distinct subjects, sorted, across every
+        # record rather than only the latest -- which is what makes a re-ingested
+        # subject one line here and a subject whose only genotyping predates the
+        # revision still a line at all.
         for subject_id in store.subjects_with_gene(gene):
             affected.append(
                 AffectedRecord(

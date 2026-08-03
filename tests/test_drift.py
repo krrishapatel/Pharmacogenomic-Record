@@ -182,7 +182,14 @@ def test_a_called_and_an_uncalled_subject_are_reported_together(tmp_path):
 
 @pytest.fixture
 def crowd(tmp_path):
-    """Several subjects across several genes, appended out of sorted order."""
+    """Several subjects across several genes, appended out of sorted order.
+
+    The genes span the shipped table widely enough that the order the report
+    groups them in -- the pair table's order -- is not their sorted order. The
+    table lists CYP2C19, DPYD, TPMT, SLCO1B1, CYP2C9; sorted they run CYP2C19,
+    CYP2C9, DPYD, SLCO1B1, TPMT. A report that skipped the gene sort would
+    therefore come out visibly reordered rather than passing by coincidence.
+    """
     store = RecordStore(tmp_path / "crowd.db")
     for subject_id, gene in [
         ("s2", "DPYD"),
@@ -191,6 +198,15 @@ def crowd(tmp_path):
         ("s2", "CYP2C19"),
         ("s1", "DPYD"),
         ("s3", "DPYD"),
+        ("s2", "TPMT"),
+        ("s3", "SLCO1B1"),
+        ("s1", "CYP2C9"),
+        ("s2", "SLCO1B1"),
+        ("s3", "CYP2C9"),
+        ("s1", "TPMT"),
+        ("s3", "TPMT"),
+        ("s1", "SLCO1B1"),
+        ("s2", "CYP2C9"),
     ]:
         store.append(
             subject_id,
@@ -201,7 +217,20 @@ def crowd(tmp_path):
 
 
 def test_order_is_gene_then_subject_and_repeats_identically(crowd):
-    changed = {"DPYD-fluorouracil", "CYP2C19-clopidogrel"}
+    """Genes sorted, then subjects sorted -- not the pair table's own order.
+
+    The changed pairs are supplied for five genes whose table order (CYP2C19,
+    DPYD, TPMT, SLCO1B1, CYP2C9) is not their sorted order, so dropping the gene
+    sort and grouping in table-encounter order fails this rather than
+    coincidentally satisfying it.
+    """
+    changed = {
+        "DPYD-fluorouracil",
+        "CYP2C19-clopidogrel",
+        "TPMT-azathioprine",
+        "SLCO1B1-simvastatin",
+        "CYP2C9-warfarin",
+    }
 
     affected = affected_by_guideline_change(crowd, changed, PAIRS)
 
@@ -209,9 +238,18 @@ def test_order_is_gene_then_subject_and_repeats_identically(crowd):
         ("CYP2C19", "s1"),
         ("CYP2C19", "s2"),
         ("CYP2C19", "s3"),
+        ("CYP2C9", "s1"),
+        ("CYP2C9", "s2"),
+        ("CYP2C9", "s3"),
         ("DPYD", "s1"),
         ("DPYD", "s2"),
         ("DPYD", "s3"),
+        ("SLCO1B1", "s1"),
+        ("SLCO1B1", "s2"),
+        ("SLCO1B1", "s3"),
+        ("TPMT", "s1"),
+        ("TPMT", "s2"),
+        ("TPMT", "s3"),
     ]
     # Same store, same inputs, same list -- twice, and independent of the order
     # the caller's set happens to iterate in.
@@ -347,8 +385,31 @@ def test_repeated_records_for_one_gene_report_the_subject_once(tmp_path):
 
 
 def test_an_empty_store_affects_nobody(tmp_path):
+    """Empty because nobody is stored -- and it stops being empty when they are.
+
+    The bare `[]` assertion is a boundary case no mutation can fail, since an
+    implementation that always returned `[]` would satisfy it. Appending one
+    subject to the same store and re-asserting pins the emptiness to the store's
+    contents, and the guards still apply to an empty store: it is not a
+    shortcut past them.
+    """
     store = RecordStore(tmp_path / "empty.db")
+
     assert affected_by_guideline_change(store, {"CYP2C19-clopidogrel"}, PAIRS) == []
+    with pytest.raises(ValueError, match="empty gene-drug pair table"):
+        affected_by_guideline_change(store, {"CYP2C19-clopidogrel"}, [])
+    with pytest.raises(TypeError, match="not a single str"):
+        affected_by_guideline_change(store, "CYP2C19-clopidogrel", PAIRS)
+
+    store.append(
+        "s1",
+        [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        guideline_version=VERSION,
+    )
+
+    assert affected_by_guideline_change(store, {"CYP2C19-clopidogrel"}, PAIRS) == [
+        AffectedRecord("s1", "CYP2C19", ("CYP2C19-clopidogrel",))
+    ]
 
 
 # --- the report line itself -------------------------------------------------
@@ -394,10 +455,18 @@ def test_empty_pair_table_is_refused(store):
         affected_by_guideline_change(store, {"CYP2C19-clopidogrel"}, [])
 
 
-def test_empty_change_set_is_refused_no_pair_table_shortcut(store):
-    """The empty-table check runs before anything, even with nothing changed."""
+def test_empty_pair_table_is_refused_even_when_nothing_changed(store):
+    """No falsy short-circuit may run ahead of the empty-table guard.
+
+    Not a duplicate of the test above: this is the case an
+    `if not changed_pair_ids: return []` at the top of the function would break,
+    turning a refusal into "nobody affected". The empty change set itself is not
+    refused -- with a real table it returns [] -- only the empty table is.
+    """
     with pytest.raises(ValueError, match="empty gene-drug pair table"):
         affected_by_guideline_change(store, set(), [])
+
+    assert affected_by_guideline_change(store, set(), PAIRS) == []
 
 
 def test_none_change_set_is_not_answered_as_nobody_affected(store):
@@ -408,6 +477,67 @@ def test_none_change_set_is_not_answered_as_nobody_affected(store):
     """
     with pytest.raises(TypeError):
         affected_by_guideline_change(store, None, PAIRS)
+
+
+# --- one id passed bare instead of wrapped ----------------------------------
+
+
+def test_a_bare_string_change_set_is_refused_not_reported_as_nobody(store):
+    """`"CYP2C9-warfarin"` instead of `{"CYP2C9-warfarin"}` must not return [].
+
+    Iterating a string yields its characters, so the normalized change set
+    becomes a bag of letters that matches no pair and the report comes back
+    empty -- for a store that genuinely holds an affected subject. This is the
+    likeliest caller mistake and the one failure this module must never have,
+    so it raises where `None` already did.
+    """
+    store.append(
+        "s4",
+        [GeneCall("CYP2C9", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        guideline_version=VERSION,
+    )
+
+    with pytest.raises(TypeError, match="not a single str"):
+        affected_by_guideline_change(store, "CYP2C9-warfarin", PAIRS)
+
+    # The same id, wrapped, is not an empty report -- so the [] a bare string
+    # used to produce was a fabricated negative, not the truth.
+    assert affected_by_guideline_change(store, {"CYP2C9-warfarin"}, PAIRS) == [
+        AffectedRecord("s4", "CYP2C9", ("CYP2C9-warfarin",))
+    ]
+
+
+def test_a_bare_bytes_change_set_is_refused(store):
+    """Bytes iterate into ints, which `normalize_pair_id` would blow up on.
+
+    Refused with the same TypeError as `str` rather than an AttributeError from
+    somewhere deeper, so the message names what the caller actually did wrong.
+    """
+    with pytest.raises(TypeError, match="not a single bytes"):
+        affected_by_guideline_change(store, b"CYP2C19-clopidogrel", PAIRS)
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        pytest.param(set, id="set"),
+        pytest.param(frozenset, id="frozenset"),
+        pytest.param(list, id="list"),
+        pytest.param(tuple, id="tuple"),
+        pytest.param(lambda ids: (i for i in ids), id="generator"),
+        pytest.param(lambda ids: dict.fromkeys(ids).keys(), id="dict-keys"),
+        pytest.param(lambda ids: iter(list(ids)), id="iterator"),
+    ],
+)
+def test_every_container_of_ids_still_works(store, wrap):
+    """Rejecting `str` must not narrow what a legitimate caller may pass.
+
+    Any iterable of ids worked before the guard and must still work after it,
+    including the one-shot iterables a "what changed" query returns.
+    """
+    affected = affected_by_guideline_change(store, wrap(["CYP2C19-clopidogrel"]), PAIRS)
+
+    assert affected == [AffectedRecord("s1", "CYP2C19", ("CYP2C19-clopidogrel",))]
 
 
 # --- a gene symbol that could never match a stored call ----------------------
