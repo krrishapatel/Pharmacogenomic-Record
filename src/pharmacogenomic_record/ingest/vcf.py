@@ -54,20 +54,49 @@ def _contig_lines(positions: list[ReferencePosition]) -> str:
 class CoverageReport:
     """Which reference positions the array actually informed.
 
+    The three gene sets partition every gene in the reference table, and the
+    boundary between them is the STRICT rule: a gene is eligible to be called
+    only when EVERY rsID-joinable position of it was covered.
+
+      genes_fully_covered      every joinable position covered -> may be called
+      genes_partially_covered  some but not all covered -> indeterminate
+      genes_fully_uncovered    no position covered at all -> not_covered
+
+    Strict, with no threshold and no ratio, because there is no principled one:
+    PharmCAT assumes reference at any position it was not given, so a gene with
+    39 of 40 positions covered still yields a confident "*1/*1 Normal
+    Metabolizer", and the one missing position is exactly where a variant would
+    have been. Any cutoff below "all of them" is a number nobody can defend.
+
+    `genes_fully_uncovered` is decided FIRST, and that ordering is load-bearing.
+    A gene whose every position lacks an rsID has an empty joinable set, so
+    "every joinable position covered" is vacuously true for it -- ranked the
+    other way round, a gene the array said nothing whatsoever about would come
+    back eligible to be called. Membership here requires at least one actually
+    covered position, so the vacuous case lands in fully_uncovered where it
+    belongs.
+
+    What this rule does NOT close: rsID-less positions are excluded from the
+    denominator, so a gene can be fully covered while real positions of it were
+    never observed -- G6PD is only 39% rsID-bearing, RYR1 78%, and 9 of the 22
+    genes hold at least one such position. `unjoinable_positions` is reported
+    for exactly that reason; it is a known residual gap, not a solved one.
+
     Fields are frozensets: `frozen=True` stops rebinding but not
     `report.covered_rsids.add(...)`, and a mutable set field would also make
     the report unhashable and unsafe to share.
 
     `unjoinable_positions` is the count of reference positions that have no
-    rsID at all (208 in 3.4.0). They appear in neither covered nor uncovered
-    because they have no rsID to key on -- but they are real gaps in
-    coverage, so the count is surfaced rather than silently dropped.
+    rsID at all. They appear in neither covered nor uncovered because they have
+    no rsID to key on -- but they are real gaps in coverage, so the count is
+    surfaced rather than silently dropped.
     """
 
     covered_rsids: frozenset[str]
     uncovered_rsids: frozenset[str]
     genes_fully_uncovered: frozenset[str]
     genes_partially_covered: frozenset[str]
+    genes_fully_covered: frozenset[str]
     unjoinable_positions: int
 
 
@@ -127,15 +156,39 @@ def build_vcf(
 
     all_joinable = set(by_rsid)
     # Positions with no PX= gene tag (INFO 'POI') contribute no gene.
-    genes_covered_partly = {
+    genes_with_any_coverage = {
         by_rsid[r].gene for r in covered if by_rsid[r].gene is not None
     }
     all_genes = {p.gene for p in positions if p.gene is not None}
 
+    # The denominator of the strict rule, per gene: every rsID-joinable position
+    # the reference table lists for it. Built from `positions` rather than from
+    # `by_rsid.values()` so that a future duplicate rsID -- which the dict would
+    # silently collapse to one entry -- cannot shrink a gene's denominator and
+    # promote a partially covered gene to fully covered. There are no duplicates
+    # in 3.4.0; the point is that this does not depend on that staying true.
+    joinable_by_gene: dict[str, set[str]] = {}
+    for position in positions:
+        if position.gene is not None and position.rsid is not None:
+            joinable_by_gene.setdefault(position.gene, set()).add(position.rsid)
+
+    # Ranked, not independent: fully_uncovered first, so that a gene with no
+    # joinable positions at all cannot satisfy "every joinable position covered"
+    # vacuously. See CoverageReport.
+    genes_fully_uncovered = all_genes - genes_with_any_coverage
+    genes_fully_covered = {
+        gene
+        for gene in genes_with_any_coverage
+        if joinable_by_gene.get(gene, set()) <= covered
+    }
+
     return CoverageReport(
         covered_rsids=frozenset(covered),
         uncovered_rsids=frozenset(all_joinable - covered),
-        genes_fully_uncovered=frozenset(all_genes - genes_covered_partly),
-        genes_partially_covered=frozenset(genes_covered_partly),
+        genes_fully_uncovered=frozenset(genes_fully_uncovered),
+        genes_partially_covered=frozenset(
+            genes_with_any_coverage - genes_fully_covered
+        ),
+        genes_fully_covered=frozenset(genes_fully_covered),
         unjoinable_positions=len(positions) - len(by_rsid),
     )
