@@ -104,6 +104,34 @@ def normalize_gene(gene: str) -> str:
     return gene.strip().upper()
 
 
+def canonical_pair_id(pair_id: str) -> str:
+    """The stored form of a CPIC pair id: stripped, case left exactly as written.
+
+    Stripped and nothing more, deliberately. This value is *displayed* -- both
+    `query_drug` explanations interpolate `pair.cpic_pair_id` verbatim -- and
+    CPIC's own ids mix cases legitimately ("CYP2C19-clopidogrel" beside
+    "guideline-for-fluoropyrimidines-and-dpyd"). Casefolding the stored value
+    would silently rewrite the citation a user reads and then compares against
+    cpicpgx.org, so case is preserved here and folded only in
+    `normalize_pair_id`, which nothing displays.
+    """
+    return pair_id.strip()
+
+
+def normalize_pair_id(pair_id: str) -> str:
+    """The comparison form of a CPIC pair id: stripped and casefolded.
+
+    Uniqueness is keyed on this, not on the raw string. The raw string let one
+    logical pair carry two ids -- "CYP2C19-clopidogrel" beside a trailing-space
+    or lowercase twin -- because the guard compared them byte for byte while
+    `gene` and `drug` were already canonicalized. Task 8 diffs guideline
+    versions keyed on `cpic_pair_id`, so a twin reads as one pair disappearing
+    and another appearing: a fabricated drift event in the exact report a user
+    consults to see what changed.
+    """
+    return canonical_pair_id(pair_id).casefold()
+
+
 def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
     """Validate one raw table entry and build its GuidelineRef."""
     if not isinstance(entry, dict):
@@ -161,6 +189,11 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
     # so this loses nothing.
     gene = normalize_gene(entry["gene"])
 
+    # Canonicalized for the same reason `gene` is: what is stored is what every
+    # comparison and every citation sees. Stripping only -- see
+    # `canonical_pair_id` for why the case is not folded here.
+    cpic_pair_id = canonical_pair_id(entry["cpic_pair_id"])
+
     # A row whose citation does not match its own gene is the worst failure this
     # table has, because it is silent: the query answers guidance_found and
     # cites a real-looking guideline for a different gene. Nothing downstream
@@ -177,7 +210,7 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
     # `re.escape` because a gene symbol is data, not a pattern.
     if not re.search(
         rf"(?<![0-9A-Za-z]){re.escape(gene)}(?![0-9A-Za-z])",
-        entry["cpic_pair_id"],
+        cpic_pair_id,
         re.IGNORECASE,
     ):
         raise GuidelineTableError(
@@ -212,10 +245,10 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
             f"elsewhere would be presented as CPIC guidance"
         )
 
-    # `gene` is stored in its canonical form, not as written: storing the raw
-    # value is what let the padded-symbol row above validate and then never
-    # match anything.
-    return GuidelineRef(**{**entry, "gene": gene})
+    # `gene` and `cpic_pair_id` are stored in their canonical forms, not as
+    # written: storing the raw value is what let the padded-symbol row above
+    # validate and then never match anything.
+    return GuidelineRef(**{**entry, "gene": gene, "cpic_pair_id": cpic_pair_id})
 
 
 def load_pairs(path: Path) -> list[GuidelineRef]:
@@ -256,14 +289,19 @@ def load_pairs(path: Path) -> list[GuidelineRef]:
                 f"duplicated pair would be reported twice for one query"
             )
         seen[key] = index
-        if pair.cpic_pair_id in seen_ids:
+        # Keyed on the normalized form, matching how `gene` and `drug` are keyed
+        # above. Compared raw, "CYP2C19-clopidogrel" and a trailing-space or
+        # lowercase twin were two keys for one logical pair, so the guard this
+        # error describes was evadable by a stray keystroke.
+        id_key = normalize_pair_id(pair.cpic_pair_id)
+        if id_key in seen_ids:
             raise GuidelineTableError(
                 f"entry {index} reuses duplicate cpic_pair_id "
                 f"{pair.cpic_pair_id!r} (first seen at entry "
-                f"{seen_ids[pair.cpic_pair_id]}); Task 8 keys guideline changes "
+                f"{seen_ids[id_key]}); Task 8 keys guideline changes "
                 f"on this id, so it must identify one pair"
             )
-        seen_ids[pair.cpic_pair_id] = index
+        seen_ids[id_key] = index
 
     return pairs
 

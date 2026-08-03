@@ -30,10 +30,12 @@ from pharmacogenomic_record.evaluate import (
 from pharmacogenomic_record.guidelines import (
     GuidelineRef,
     GuidelineTableError,
+    canonical_pair_id,
     find_pairs_for_drug,
     load_pairs,
     normalize_drug,
     normalize_gene,
+    normalize_pair_id,
 )
 from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
@@ -961,6 +963,46 @@ def test_a_gene_embedded_in_a_longer_symbol_is_not_a_citation_match(tmp_path):
 @pytest.mark.parametrize(
     "gene, cpic_pair_id",
     [
+        # A symbol that is a PREFIX of another real symbol. UGT1A1 and UGT1A10
+        # are both real HGNC symbols and UGT1A1 is in this project's own
+        # positions table, so "UGT1A10-atazanavir" on a UGT1A1 row is a
+        # plausible off-by-one-digit typo. The lookBEHIND cannot catch this one
+        # -- the match starts at position 0 -- so only the trailing
+        # `(?![0-9A-Za-z])` rejects it. Deleting that lookahead loads the row
+        # and cites UGT1A10's guideline as UGT1A1's.
+        pytest.param("UGT1A1", "UGT1A10-atazanavir", id="prefix-of-a-longer-symbol"),
+        # Same shape, letters instead of digits: F2R and F2RL1 are real thrombin
+        # receptors, distinct genes from coagulation factor F2.
+        pytest.param("F2", "F2R-warfarin", id="prefix-of-a-longer-symbol-letters"),
+        # A gene symbol is data, not a pattern. Without `re.escape`, "." in the
+        # stored symbol matches the "1" in CYP2C19 and this row LOADS with gene
+        # "CYP2C.9" citing the CYP2C19 guideline -- a symbol no HGNC table has,
+        # answering for a gene it does not name.
+        pytest.param("CYP2C.9", "CYP2C19-clopidogrel", id="metacharacter-dot"),
+        pytest.param("F.", "F2-warfarin", id="metacharacter-dot-two-char"),
+    ],
+)
+def test_a_gene_that_only_resembles_its_pair_id_is_refused(
+    tmp_path, gene, cpic_pair_id
+):
+    """Neither a prefix collision nor a regex metacharacter may pass as a match.
+
+    Each of these loads -- and cites another gene's guideline under this row's
+    gene -- if the boundary check loses its trailing lookahead or its
+    `re.escape`. The wrong citation IS the wrong answer, and it looks entirely
+    confident, so it has to be refused at load.
+    """
+    path = write_table(
+        tmp_path,
+        [{**VALID_ENTRY, "gene": gene, "cpic_pair_id": cpic_pair_id}],
+    )
+    with pytest.raises(GuidelineTableError, match="does not name its own gene"):
+        load_pairs(path)
+
+
+@pytest.mark.parametrize(
+    "gene, cpic_pair_id",
+    [
         pytest.param("CYP2C19", "CYP2C19-clopidogrel", id="gene-first"),
         pytest.param("CYP2C9", "CYP2C9-warfarin", id="shorter-cyp2c-sibling"),
         pytest.param("VKORC1", "VKORC1-warfarin", id="trailing-digit"),
@@ -974,6 +1016,11 @@ def test_a_gene_embedded_in_a_longer_symbol_is_not_a_citation_match(tmp_path):
         pytest.param("SLCO1B1", "SLCO1B1-simvastatin", id="digits-inside"),
         pytest.param("TPMT", "TPMT-azathioprine", id="letters-only"),
         pytest.param("CYP2D6", "CYP2D6-codeine", id="cyp2d6"),
+        # The accept twin of the UGT1A1/UGT1A10 reject param above. Without it,
+        # that rejection could be satisfied by over-tightening the check into
+        # something that also refuses UGT1A1's own real pair id -- and a refused
+        # row loads as nothing at all.
+        pytest.param("UGT1A1", "UGT1A1-atazanavir", id="prefix-symbols-own-pair-id"),
     ],
 )
 def test_every_legitimate_pair_id_shape_still_loads(tmp_path, gene, cpic_pair_id):
@@ -1060,6 +1107,112 @@ def test_a_case_variant_gene_cannot_evade_the_duplicate_pair_check(
     )
     with pytest.raises(GuidelineTableError, match="duplicate gene-drug pair"):
         load_pairs(path)
+
+
+@pytest.mark.parametrize(
+    "second_id",
+    [
+        pytest.param("CYP2C19-clopidogrel", id="identical"),
+        pytest.param("CYP2C19-clopidogrel ", id="trailing-space"),
+        pytest.param(" CYP2C19-clopidogrel", id="leading-space"),
+        pytest.param("cyp2c19-clopidogrel", id="case-variant"),
+    ],
+)
+def test_a_whitespace_or_case_twin_cannot_evade_the_duplicate_pair_id_check(
+    tmp_path, second_id
+):
+    """The pair-id guard has to be keyed on ONE form, like gene and drug are.
+
+    Compared raw, only the byte-identical case was caught: a trailing space or a
+    lowercase twin gave one logical pair two ids. Task 8 diffs guideline
+    versions keyed on `cpic_pair_id`, so a twin reads as one pair disappearing
+    and a new one appearing -- a fabricated drift event in the exact report a
+    user consults to see what changed.
+
+    The two rows carry DIFFERENT drugs on purpose, so the gene-drug key cannot
+    fire and only the pair-id guard is under test.
+    """
+    path = write_table(
+        tmp_path,
+        [
+            VALID_ENTRY,
+            {**VALID_ENTRY, "drug": "prasugrel", "cpic_pair_id": second_id},
+        ],
+    )
+    with pytest.raises(GuidelineTableError, match="duplicate cpic_pair_id"):
+        load_pairs(path)
+
+
+@pytest.mark.parametrize(
+    "written, stored",
+    [
+        pytest.param(" CYP2C19-clopidogrel ", "CYP2C19-clopidogrel", id="padded"),
+        pytest.param(
+            "\tCYP2C19-clopidogrel\n", "CYP2C19-clopidogrel", id="padded-with-tabs"
+        ),
+    ],
+)
+def test_a_padded_pair_id_is_stripped_but_its_case_is_preserved(
+    tmp_path, written, stored
+):
+    """Stripped, never casefolded: this value is what a citation displays.
+
+    `query_drug` interpolates `cpic_pair_id` verbatim into its explanations, and
+    CPIC's own ids mix cases legitimately, so folding the stored form would
+    rewrite the string a user reads and then looks up on cpicpgx.org.
+    """
+    path = write_table(tmp_path, [{**VALID_ENTRY, "cpic_pair_id": written}])
+    loaded = load_pairs(path)
+    assert [p.cpic_pair_id for p in loaded] == [stored]
+
+    # The displayed case survives canonicalization in both directions.
+    mixed = "guideline-for-Fluoropyrimidines-and-DPYD"
+    path = write_table(
+        tmp_path,
+        [{**VALID_ENTRY, "gene": "DPYD", "cpic_pair_id": f"  {mixed}  "}],
+    )
+    assert [p.cpic_pair_id for p in load_pairs(path)] == [mixed]
+
+
+def test_the_shipped_pair_ids_are_displayed_exactly_as_written():
+    """Canonicalizing the id must not change any citation this table already makes.
+
+    Every shipped id carries an uppercase gene prefix, and CPIC also publishes
+    all-lowercase slug ids ("guideline-for-fluoropyrimidines-and-dpyd", pinned
+    as an accept shape above), so case is information the table legitimately
+    varies. A casefolding canonical form would silently rewrite all seven
+    citations users are told to look up on cpicpgx.org.
+    """
+    written = json.loads(PAIRS_PATH.read_text(encoding="utf-8"))
+    assert [p.cpic_pair_id for p in PAIRS] == [e["cpic_pair_id"] for e in written]
+    assert [p.cpic_pair_id for p in PAIRS] == [
+        "CYP2C19-clopidogrel",
+        "CYP2D6-codeine",
+        "DPYD-fluorouracil",
+        "TPMT-azathioprine",
+        "SLCO1B1-simvastatin",
+        "CYP2C9-warfarin",
+        "VKORC1-warfarin",
+    ]
+    # Non-folded case is genuinely present, so the assertion above is not
+    # vacuous: casefolding the stored form WOULD change what is displayed.
+    assert all(p.cpic_pair_id != p.cpic_pair_id.casefold() for p in PAIRS)
+
+
+def test_pair_id_canonical_and_comparison_forms_are_distinct_and_used_on_load():
+    assert canonical_pair_id("  CYP2C19-clopidogrel\n") == "CYP2C19-clopidogrel"
+    # The canonical (stored, displayed) form keeps case; the comparison form
+    # folds it. If these two collapsed into one function, either the citation
+    # would be rewritten or the duplicate guard would stay evadable.
+    assert canonical_pair_id("CYP2C19-clopidogrel") != normalize_pair_id(
+        "CYP2C19-clopidogrel"
+    )
+    assert normalize_pair_id(" CYP2C19-clopidogrel ") == normalize_pair_id(
+        "cyp2c19-clopidogrel"
+    )
+    # Every shipped id is already canonical, so loading is a no-op for them.
+    for pair in PAIRS:
+        assert canonical_pair_id(pair.cpic_pair_id) == pair.cpic_pair_id
 
 
 def test_normalize_gene_is_the_canonical_form_used_on_load():
