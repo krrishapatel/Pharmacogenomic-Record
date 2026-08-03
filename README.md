@@ -210,7 +210,7 @@ This output is a reference to published CPIC citations, keyed on stored gene cal
 
 - Consumer genotype data is not clinically confirmed and has not been through a
   diagnostic laboratory.
-- The pair table in `data/gene_drug_pairs.json` is a small curated subset of
+- The pair table in `src/pharmacogenomic_record/data/gene_drug_pairs.json` is a small curated subset of
   CPIC's pairs. A `no_guidance_for_pair` answer states only that the drug is
   absent from *this table*.
 - Guidance is pinned to a version; the tool is only as current as that pin, which
@@ -227,9 +227,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Genotype data must never be committed: `data/.gitignore` ignores everything in
-`data/` except the two committed reference tables, and `work/` and `records.db`
-are ignored at the repo root.
+Genotype data must never be committed: the reference tables ship as package
+data under `src/pharmacogenomic_record/data/` (so they are found through
+`importlib.resources` and travel inside the wheel, not via a path relative to
+the repo root), and `src/pharmacogenomic_record/data/.gitignore` ignores
+everything in that directory except the two committed reference tables. `work/`
+and `records.db` are ignored at the repo root.
 
 `tests/fixtures/23andme_full_cyp2c19.txt` is **synthetic** — it is not any
 person's genotype data. It exists so the strict coverage rule can be exercised

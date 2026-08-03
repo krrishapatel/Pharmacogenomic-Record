@@ -48,8 +48,9 @@ from pharmacogenomic_record.store import RecordStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
-PAIRS = REPO_ROOT / "data" / "gene_drug_pairs.json"
+DATA = REPO_ROOT / "src" / "pharmacogenomic_record" / "data"
+POSITIONS = DATA / POSITIONS_FILENAME
+PAIRS = DATA / "gene_drug_pairs.json"
 PHENOTYPE_SAMPLE = FIXTURES / "pharmcat_phenotype_sample.json"
 
 # Phrases that would turn "we do not know" into an all-clear. Same list Task 7
@@ -112,6 +113,64 @@ def assert_no_reassurance(text: str) -> None:
 @pytest.fixture
 def store(tmp_path):
     return RecordStore(tmp_path / "records.db")
+
+
+# --------------------------------------------------------------------------
+# The reference tables are located as package data, not by a filesystem walk.
+# --------------------------------------------------------------------------
+
+
+def test_default_data_paths_resolve_through_the_package_not_a_source_walk():
+    """The pinned tables must be found via the package, not `parents[2]/data`.
+
+    A `Path(__file__).resolve().parents[2] / "data"` walk finds the tables only
+    in an editable checkout: a wheel installed into site-packages has no repo
+    root two levels up, so `query` failed to load its pair table for every
+    non-editable install. Resolving through `importlib.resources` finds the
+    same data whether the code runs from a checkout or an installed wheel.
+
+    Anchored on the package location, so it fails if the defaults ever revert
+    to walking up from the source file.
+    """
+    import pharmacogenomic_record as pkg
+    from pharmacogenomic_record import cli
+
+    package_data = Path(pkg.__file__).resolve().parent / "data"
+
+    assert cli.PAIRS_PATH == package_data / "gene_drug_pairs.json"
+    assert cli.POSITIONS_PATH == package_data / POSITIONS_FILENAME
+    assert cli.PAIRS_PATH.is_file()
+    assert cli.POSITIONS_PATH.is_file()
+    # Readable through the resolved path, which is the property `query` needs.
+    assert cli.PAIRS_PATH.read_text(encoding="utf-8").strip()
+    assert cli.POSITIONS_PATH.read_text(encoding="utf-8").strip()
+
+
+def test_default_data_paths_are_independent_of_the_working_directory(tmp_path):
+    """Resolved from an unrelated CWD, the defaults must still find the tables.
+
+    Run in a subprocess whose CWD is a scratch directory with no `data/` in
+    sight, so a resolver that depended on the working directory -- or on a repo
+    root reachable from it -- would come back with paths that do not exist. The
+    tool's answer must not depend on where the shell happens to be.
+    """
+    import subprocess
+
+    code = (
+        "from pharmacogenomic_record import cli\n"
+        "assert cli.PAIRS_PATH.is_file(), cli.PAIRS_PATH\n"
+        "assert cli.POSITIONS_PATH.is_file(), cli.POSITIONS_PATH\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
 
 
 # --------------------------------------------------------------------------

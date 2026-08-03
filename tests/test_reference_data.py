@@ -3,7 +3,7 @@ from pathlib import Path
 from pharmacogenomic_record import POSITIONS_FILENAME
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-POSITIONS = REPO_ROOT / "data" / POSITIONS_FILENAME
+POSITIONS = REPO_ROOT / "src" / "pharmacogenomic_record" / "data" / POSITIONS_FILENAME
 
 
 def test_positions_file_exists():

@@ -34,6 +34,7 @@ import argparse
 import sqlite3
 import sys
 from collections.abc import Sequence
+from importlib.resources import files
 from pathlib import Path
 
 from pharmacogenomic_record import POSITIONS_FILENAME
@@ -61,13 +62,17 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_CANNOT_ASSESS = 2
 
-# The reference tables live next to the source, not next to the CWD. Resolving
-# them relative to the working directory means `query` finds the pair table when
-# run from the repo root and reports a load failure when run from anywhere else
-# -- the tool's answer must not depend on where the shell happens to be.
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-PAIRS_PATH = _DATA_DIR / "gene_drug_pairs.json"
-POSITIONS_PATH = _DATA_DIR / POSITIONS_FILENAME
+# The reference tables ship inside the package and are located through
+# importlib.resources, not a filesystem walk relative to the source tree. The
+# tool's answer must not depend on where the shell happens to be -- but it also
+# must not depend on how the package was installed. A `parents[2] / "data"` walk
+# only finds the tables in an editable checkout; a wheel installed into
+# site-packages has no repo root two levels up, so the console script silently
+# broke for every non-editable install. `files()` resolves the same package
+# data whether the code runs from a checkout or an installed wheel.
+_DATA_DIR = files("pharmacogenomic_record") / "data"
+PAIRS_PATH = Path(str(_DATA_DIR / "gene_drug_pairs.json"))
+POSITIONS_PATH = Path(str(_DATA_DIR / POSITIONS_FILENAME))
 
 # The version stamp written onto every record, naming the revision of the pair
 # table that produced it. Pinned here beside the table it describes: a record

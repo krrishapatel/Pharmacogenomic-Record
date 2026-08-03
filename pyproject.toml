@@ -18,5 +18,14 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The reference tables ship inside the wheel and are located at runtime via
+# importlib.resources, not a filesystem walk relative to the source tree. A
+# `parents[2]` walk only finds them in an editable install; a wheel installed
+# into site-packages has no repo root to walk up to, so the console script
+# broke for every non-editable install. Packaging them as package data is what
+# makes `pharmacogenomic-record query` work regardless of how it was installed.
+[tool.setuptools.package-data]
+pharmacogenomic_record = ["data/gene_drug_pairs.json", "data/pharmcat_positions_*.vcf"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

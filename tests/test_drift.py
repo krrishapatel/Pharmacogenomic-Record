@@ -24,7 +24,10 @@ from pharmacogenomic_record.drift import AffectedRecord, affected_by_guideline_c
 from pharmacogenomic_record.guidelines import GuidelineRef, load_pairs
 from pharmacogenomic_record.store import RecordStore
 
-PAIRS_PATH = Path(__file__).resolve().parents[1] / "data/gene_drug_pairs.json"
+PAIRS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src/pharmacogenomic_record/data/gene_drug_pairs.json"
+)
 PAIRS = load_pairs(PAIRS_PATH)
 
 VERSION = "cpic-2026-07"

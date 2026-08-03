@@ -39,7 +39,10 @@ from pharmacogenomic_record.guidelines import (
 )
 from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
-PAIRS_PATH = Path(__file__).resolve().parents[1] / "data/gene_drug_pairs.json"
+PAIRS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src/pharmacogenomic_record/data/gene_drug_pairs.json"
+)
 PAIRS = load_pairs(PAIRS_PATH)
 
 GUIDELINE_FIELDS = {"gene", "drug", "cpic_pair_id", "url"}
