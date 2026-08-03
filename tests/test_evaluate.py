@@ -765,10 +765,16 @@ def test_find_pairs_for_drug_returns_every_gene_for_a_multi_gene_drug():
 
 
 def test_gene_matching_errs_toward_cannot_assess(store):
-    """Gene names are matched exactly; a mismatch fails safe, never confident."""
+    """Gene names are matched exactly; a mismatch fails safe, never confident.
+
+    The mismatch here is a different gene rather than a case variant: the store
+    now rejects a non-uppercase gene outright, because a gene that fails to
+    match is silently absent from every later query rather than wrong in a way
+    anyone would notice. A wrong-gene call reaches the same code path.
+    """
     store.append(
         "s1",
-        [GeneCall("cyp2c19", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        [GeneCall("CYP2D6", "*1/*2", "Intermediate Metabolizer", CALLED)],
         guideline_version="cpic-2026-07",
     )
 
