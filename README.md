@@ -1,4 +1,4 @@
-# pharmacogenomic-record
+# Pharmacogenomic-Record
 
 A single-subject longitudinal pharmacogenomic record built on
 [PharmCAT](https://github.com/PharmGKB/PharmCAT).
