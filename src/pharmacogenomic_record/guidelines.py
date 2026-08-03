@@ -15,6 +15,7 @@ complete, non-blank, https, and unique, or nothing loads at all.
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -71,8 +72,11 @@ def normalize_drug(drug: str) -> str:
     """
     if not isinstance(drug, str):
         raise TypeError(f"drug name must be a string, got {type(drug).__name__}")
-    # NFKC first: it turns U+00A0 and friends into plain spaces, so strip()
-    # only works on the whole of the whitespace after normalizing.
+    # NFKC is not here for whitespace: `"\xa0".strip()` and `"　".strip()`
+    # are already "" without it. What it buys is the compatibility forms, which
+    # nothing else folds -- fullwidth "ＷＡＲＦＡＲＩＮ" from an IME, ligatures,
+    # superscripts. It runs before strip() because a compatibility form can
+    # decompose *to* whitespace, so stripping first could leave some behind.
     needle = unicodedata.normalize("NFKC", drug).strip().casefold()
     if not needle:
         raise ValueError(
@@ -81,6 +85,23 @@ def normalize_drug(drug: str) -> str:
             f"that was never named"
         )
     return needle
+
+
+def normalize_gene(gene: str) -> str:
+    """The canonical form of a gene symbol: stripped and uppercased.
+
+    Applied to the table on load, so what is stored is what every comparison
+    sees. HGNC gene symbols are uppercase by definition, so this is a
+    canonicalization and not a guess.
+
+    Both variants it folds are the same bug: a stored symbol that can never
+    match. `query_drug` looks a gene up by exact dict key, so a row carrying
+    " CYP2C19 " or "cyp2c19" answers cannot_assess for a subject whose CYP2C19
+    was genotyped -- the safe direction, but still a wrong answer. Folding here
+    also gives the duplicate-pair check one key per gene, so a case variant
+    cannot smuggle in a second copy of a pair the table already lists.
+    """
+    return gene.strip().upper()
 
 
 def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
@@ -128,12 +149,37 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
             f"a channel that cannot be rewritten in transit"
         )
 
+    # Canonicalized before anything compares it. The check below used to strip
+    # `gene` while storing the raw value, so a row with " CYP2C19 " passed the
+    # check and then never matched a stored call: `query_drug` looks the gene up
+    # with an exact, case-sensitive dict lookup (`calls.get(pair.gene)`), so a
+    # padded or lowercased symbol comes back cannot_assess for a subject who
+    # *was* genotyped. Uppercasing is not redundant with that lookup -- it is
+    # what makes a "cyp2c19" row reach a stored CYP2C19 at all -- and it also
+    # collapses case variants onto one duplicate-detection key, which a raw
+    # value lets a second copy of a pair slip past. HGNC symbols are uppercase,
+    # so this loses nothing.
+    gene = normalize_gene(entry["gene"])
+
     # A row whose citation does not match its own gene is the worst failure this
     # table has, because it is silent: the query answers guidance_found and
     # cites a real-looking guideline for a different gene. Nothing downstream
     # can catch it -- the citation IS the answer -- so it has to be caught here.
-    gene = entry["gene"]
-    if gene.strip().casefold() not in entry["cpic_pair_id"].casefold():
+    #
+    # Matched on a token boundary, not as a bare substring: "F2" IS a substring
+    # of "CYP4F2-warfarin", and both F2 and CYP4F2 are real warfarin-associated
+    # genes, so a substring test loads that row and cites the CYP4F2 guideline
+    # as F2's. The lookarounds reject a match glued to an adjacent alphanumeric
+    # while allowing the hyphens CPIC ids are built from -- including the hyphen
+    # inside a symbol like HLA-B, and a gene at the very end of a slug like
+    # "guideline-for-fluoropyrimidines-and-dpyd". `\b` is not used: it treats
+    # digits as word characters, which is precisely where these symbols differ.
+    # `re.escape` because a gene symbol is data, not a pattern.
+    if not re.search(
+        rf"(?<![0-9A-Za-z]){re.escape(gene)}(?![0-9A-Za-z])",
+        entry["cpic_pair_id"],
+        re.IGNORECASE,
+    ):
         raise GuidelineTableError(
             f"entry {index} cites cpic_pair_id {entry['cpic_pair_id']!r}, which "
             f"does not name its own gene {gene!r}; a pair id belonging to another "
@@ -145,7 +191,18 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
     # pair id could legitimately be "DPYD-fluoropyrimidines" for a row whose
     # drug is "capecitabine". Requiring the drug to appear would reject correct
     # future rows, and a rejected row loads as nothing at all.
-    host = urlsplit(url).hostname
+
+    # urlsplit raises a bare ValueError on a malformed authority ("Invalid IPv6
+    # URL" for "https://[abc/x"), which would escape load_pairs naming neither
+    # the entry nor the table. Every other rejection here says which row is at
+    # fault; an unparseable url must not be the one exception.
+    try:
+        host = urlsplit(url).hostname
+    except ValueError as err:
+        raise GuidelineTableError(
+            f"entry {index} url {url!r} cannot be parsed ({err}); a url this "
+            f"table cannot resolve to a host cannot be pinned to {_CITATION_HOST}"
+        ) from err
     if host is None or (
         host != _CITATION_HOST and not host.endswith(f".{_CITATION_HOST}")
     ):
@@ -155,7 +212,10 @@ def _entry_to_ref(index: int, entry: object) -> GuidelineRef:
             f"elsewhere would be presented as CPIC guidance"
         )
 
-    return GuidelineRef(**entry)
+    # `gene` is stored in its canonical form, not as written: storing the raw
+    # value is what let the padded-symbol row above validate and then never
+    # match anything.
+    return GuidelineRef(**{**entry, "gene": gene})
 
 
 def load_pairs(path: Path) -> list[GuidelineRef]:

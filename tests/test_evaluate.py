@@ -9,6 +9,7 @@ pytest's `tmp_path`. Nothing is read relative to the CWD.
 """
 
 import json
+import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +33,7 @@ from pharmacogenomic_record.guidelines import (
     find_pairs_for_drug,
     load_pairs,
     normalize_drug,
+    normalize_gene,
 )
 from pharmacogenomic_record.store import CorruptRecordError, RecordStore
 
@@ -560,9 +562,14 @@ def test_overall_outcome_refuses_an_empty_or_unknown_answer():
 @pytest.mark.parametrize(
     "drug",
     [
-        # A drug in the table (one gene called, one pair) and a drug that is not
-        # in it at all. "codeine"/"warfarin" exercise the same branch as
-        # "clopidogrel"; "zzz-not-a-drug" the same one as "amoxicillin".
+        # One drug in the table and one absent from it -- the two branches of
+        # the never-empty guarantee. The trimmed cases were not duplicates of
+        # these: with only CYP2C19 stored, "codeine" returns [cannot_assess] and
+        # "warfarin" returns two results, both different from "clopidogrel"'s
+        # guidance_found. They are covered by the tests named for them --
+        # test_cannot_assess_when_gene_absent_from_record and
+        # test_multi_gene_drug_keeps_the_uncovered_gene_visible -- which is why
+        # dropping them here lost nothing.
         pytest.param("clopidogrel", id="in-table"),
         pytest.param("amoxicillin", id="not-in-table"),
     ],
@@ -668,9 +675,23 @@ def test_drug_matching_ignores_case_and_surrounding_whitespace(store, drug):
 @pytest.mark.parametrize(
     "drug",
     [
+        # Only these two actually require NFKC. Nothing else in the codebase
+        # folds a fullwidth letter, so removing the normalize() call breaks
+        # exactly these params -- which is what makes them worth keeping.
         pytest.param("ＷＡＲＦＡＲＩＮ", id="fullwidth-upper"),
         pytest.param("ｗａｒｆａｒｉｎ", id="fullwidth-lower"),
-        pytest.param(" warfarin ", id="non-breaking-space"),
+        # Kept, but honestly labelled: `"\xa0".strip()` is already "" in
+        # Python, so this param passes with or without NFKC. It pins that
+        # stripping covers non-ASCII whitespace; it demonstrates nothing about
+        # NFKC, and its old id ("non-breaking-space") implied otherwise.
+        pytest.param(" warfarin ", id="nbsp-padding-stripped-without-nfkc"),
+        # What a real paste actually looks like: fullwidth letters *inside*
+        # NBSP padding. Needs NFKC for the letters and strip() for the
+        # padding, so it fails if either half is removed.
+        pytest.param(
+            " ｗａｒｆａｒｉｎ ",
+            id="fullwidth-inside-nbsp-padding",
+        ),
     ],
 )
 def test_compatibility_forms_of_a_drug_name_still_match(store, drug):
@@ -896,7 +917,180 @@ def test_the_shipped_table_still_loads_under_every_citation_check():
     assert len(PAIRS) == 7
     for pair in PAIRS:
         assert pair.gene.casefold() in pair.cpic_pair_id.casefold(), pair
+        # Not merely a substring: the gene must sit on a token boundary in its
+        # own pair id, which is the check load_pairs actually applies.
+        assert re.search(
+            rf"(?<![0-9A-Za-z]){re.escape(pair.gene)}(?![0-9A-Za-z])",
+            pair.cpic_pair_id,
+            re.IGNORECASE,
+        ), pair
         assert pair.url.startswith("https://cpicpgx.org/"), pair
+
+
+# --------------------------------------------------------------------------
+# The gene/pair-id check matches a token, not a bare substring.
+# --------------------------------------------------------------------------
+
+
+def test_a_gene_embedded_in_a_longer_symbol_is_not_a_citation_match(tmp_path):
+    """"F2" is a substring of "CYP4F2-warfarin", and that is not a match.
+
+    F2 and CYP4F2 are both real warfarin-associated genes, and F2 is in this
+    project's own null-phenotype list, so this row is a plausible typo rather
+    than a contrived one. Under a bare substring test it LOADED, and a called F2
+    then came back guidance_found citing the CYP4F2 guideline -- the exact silent
+    wrong-gene citation this check exists to stop, and one nothing downstream can
+    catch, because the citation IS the answer.
+    """
+    path = write_table(
+        tmp_path,
+        [
+            {
+                "gene": "F2",
+                "drug": "warfarin",
+                "cpic_pair_id": "CYP4F2-warfarin",
+                "url": "https://cpicpgx.org/guidelines/"
+                "guideline-for-warfarin-and-cyp2c9-and-vkorc1/",
+            }
+        ],
+    )
+    with pytest.raises(GuidelineTableError, match="does not name its own gene"):
+        load_pairs(path)
+
+
+@pytest.mark.parametrize(
+    "gene, cpic_pair_id",
+    [
+        pytest.param("CYP2C19", "CYP2C19-clopidogrel", id="gene-first"),
+        pytest.param("CYP2C9", "CYP2C9-warfarin", id="shorter-cyp2c-sibling"),
+        pytest.param("VKORC1", "VKORC1-warfarin", id="trailing-digit"),
+        pytest.param(
+            "DPYD",
+            "guideline-for-fluoropyrimidines-and-dpyd",
+            id="gene-last-and-lowercase",
+        ),
+        pytest.param("HLA-B", "HLA-B-abacavir", id="hyphen-inside-the-symbol"),
+        pytest.param("F2", "F2-warfarin", id="two-character-symbol"),
+        pytest.param("SLCO1B1", "SLCO1B1-simvastatin", id="digits-inside"),
+        pytest.param("TPMT", "TPMT-azathioprine", id="letters-only"),
+        pytest.param("CYP2D6", "CYP2D6-codeine", id="cyp2d6"),
+    ],
+)
+def test_every_legitimate_pair_id_shape_still_loads(tmp_path, gene, cpic_pair_id):
+    """The accept side of the boundary check, pinned shape by shape.
+
+    A rejected row is not a rejected row: load_pairs is all-or-nothing, so one
+    of these failing means the whole table stops loading and EVERY drug answers
+    no_guidance_for_pair -- a fabricated negative across the board. This list is
+    what stops a future "tightening" of the check from doing that silently.
+    """
+    path = write_table(
+        tmp_path,
+        [{**VALID_ENTRY, "gene": gene, "cpic_pair_id": cpic_pair_id}],
+    )
+    loaded = load_pairs(path)
+    assert [p.cpic_pair_id for p in loaded] == [cpic_pair_id]
+    assert loaded[0].gene == gene
+
+
+# --------------------------------------------------------------------------
+# A gene symbol is stored in the form every comparison will use.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "gene",
+    [
+        pytest.param(" CYP2C19 ", id="padded"),
+        pytest.param("cyp2c19", id="lowercase"),
+        pytest.param("\tCyp2c19\n", id="padded-and-mixed-case"),
+    ],
+)
+def test_a_padded_or_case_variant_gene_is_canonicalized_not_stored_as_written(
+    tmp_path, store, gene
+):
+    """Storing the raw value made the row validate and then never match.
+
+    The old check compared `gene.strip()` but stored the unstripped string, so a
+    " CYP2C19 " row loaded happily and a genuinely called CYP2C19 came back
+    cannot_assess -- `query_drug` looks the gene up by exact dict key. The safe
+    direction, but still a confident wrong answer about a subject who WAS
+    genotyped, and the strip inside the check is what hid it.
+    """
+    path = write_table(tmp_path, [{**VALID_ENTRY, "gene": gene}])
+    pairs = load_pairs(path)
+    assert [p.gene for p in pairs] == ["CYP2C19"]
+
+    store.append(
+        "s1",
+        [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        guideline_version="cpic-2026-07",
+    )
+    results = query_drug(store, "s1", "clopidogrel", pairs)
+    assert [r.outcome for r in results] == [GUIDANCE_FOUND]
+
+
+@pytest.mark.parametrize(
+    "second_gene",
+    [
+        pytest.param("cyp2c19", id="case-variant"),
+        pytest.param(" CYP2C19 ", id="padded"),
+    ],
+)
+def test_a_case_variant_gene_cannot_evade_the_duplicate_pair_check(
+    tmp_path, second_gene
+):
+    """Uniqueness is keyed on the gene, so it has to be keyed on ONE form.
+
+    With the raw value stored, "CYP2C19" and "cyp2c19" were different keys and a
+    second copy of an existing pair slipped through -- reported twice for one
+    query. The pair ids here are deliberately distinct so only the gene key can
+    catch it.
+    """
+    path = write_table(
+        tmp_path,
+        [
+            VALID_ENTRY,
+            {
+                **VALID_ENTRY,
+                "gene": second_gene,
+                "cpic_pair_id": "CYP2C19-clopidogrel-2019",
+            },
+        ],
+    )
+    with pytest.raises(GuidelineTableError, match="duplicate gene-drug pair"):
+        load_pairs(path)
+
+
+def test_normalize_gene_is_the_canonical_form_used_on_load():
+    assert normalize_gene(" cyp2c19 ") == "CYP2C19"
+    assert normalize_gene("HLA-B") == "HLA-B"
+    # Every shipped gene is already canonical, so loading is a no-op for them.
+    for pair in PAIRS:
+        assert normalize_gene(pair.gene) == pair.gene
+
+
+# --------------------------------------------------------------------------
+# A url this table cannot parse is still named as one bad row.
+# --------------------------------------------------------------------------
+
+
+def test_an_unparseable_url_is_reported_as_a_table_error_naming_the_entry(tmp_path):
+    """`urlsplit` raises a bare ValueError, which escapes the error contract.
+
+    "https://[abc/x" raises ValueError("Invalid IPv6 URL") with no entry index
+    and no mention of the pair table, so the one failure a maintainer cannot fix
+    from the message is the one that says least. Every other rejection in
+    load_pairs names its row.
+    """
+    path = write_table(
+        tmp_path, [VALID_ENTRY, {**VALID_ENTRY, "url": "https://[abc/x"}]
+    )
+    with pytest.raises(GuidelineTableError) as excinfo:
+        load_pairs(path)
+    message = str(excinfo.value)
+    assert "entry 1" in message, message
+    assert "https://[abc/x" in message, message
 
 
 def test_only_the_gene_is_pinned_to_the_pair_id_not_the_drug(tmp_path):
