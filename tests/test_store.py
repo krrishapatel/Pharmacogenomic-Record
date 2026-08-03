@@ -643,6 +643,195 @@ def test_a_gene_name_containing_whitespace_is_still_accepted(store):
     assert store.record_versions(record_id)[1] == "cpic 2026 07"
 
 
+# --- A stored gene symbol is in the form every lookup will use ---------------
+#
+# `subjects_with_gene` joins with `g.gene = ?` and `query_drug` looks the gene up
+# as a dict key, while the guideline table is force-uppercased on load. A stored
+# "cyp2c19" or " CYP2C19" therefore matches nothing: the subject is silently
+# absent from drift reports and reads as "no data for this gene". Rejecting the
+# write is the only point at which that is still visible -- see the schema
+# comment for why the value is not quietly upcased instead.
+
+# The real symbols this project stores. A CHECK that rejected one of these would
+# be far worse than the bug it fixes: it would make the store unusable. HLA-B
+# carries a hyphen and eight of them carry digits, which is exactly where a
+# careless "letters only" canonicalization would break.
+REAL_GENES = [
+    "CYP2C19", "CYP2C9", "CYP2D6", "DPYD", "TPMT", "SLCO1B1", "VKORC1",
+    "HLA-B", "G6PD", "UGT1A1", "NUDT15", "NAT2", "ABCG2", "IFNL3", "CFTR",
+    "F2", "F5",
+]
+
+
+@pytest.mark.parametrize(
+    "gene",
+    [
+        pytest.param("cyp2c19", id="lowercase"),
+        pytest.param("dpyd", id="lowercase-no-digits"),
+        pytest.param("hla-b", id="lowercase-hyphenated"),
+    ],
+)
+def test_a_lowercase_gene_is_rejected_rather_than_stored_invisibly(store, gene):
+    """The reproduction: this row used to be accepted and then match nothing."""
+    with pytest.raises(sqlite3.IntegrityError):
+        store.append(
+            "s9",
+            [GeneCall(gene, "*1/*2", "Intermediate Metabolizer", CALLED)],
+            guideline_version="cpic-2026-07",
+        )
+    # Rejected outright, not stored under a name no lookup can reach.
+    assert store.history("s9") == []
+    assert store.subjects_with_gene(gene) == []
+    assert store.subjects_with_gene(gene.upper()) == []
+
+
+@pytest.mark.parametrize(
+    "gene",
+    [
+        pytest.param("Cyp2c19", id="title-case"),
+        pytest.param("CYP2c19", id="trailing-lowercase"),
+        pytest.param("cYP2C19", id="leading-lowercase"),
+        pytest.param("Hla-B", id="mixed-case-hyphenated"),
+    ],
+)
+def test_a_mixed_case_gene_is_rejected(store, gene):
+    with pytest.raises(sqlite3.IntegrityError):
+        store.append(
+            "s9",
+            [GeneCall(gene, "*1/*2", "Intermediate Metabolizer", CALLED)],
+            guideline_version="cpic-2026-07",
+        )
+    assert store.history("s9") == []
+
+
+@pytest.mark.parametrize("blank", WHITESPACE)
+@pytest.mark.parametrize("side", ["leading", "trailing", "both"])
+def test_a_padded_gene_is_rejected_on_every_whitespace_character(
+    store, blank, side
+):
+    """" CYP2C19" is as invisible to `g.gene = ?` as "cyp2c19" is.
+
+    Parametrized over the whole WHITESPACE set rather than just a space because
+    sqlite's one-argument trim() strips spaces only -- a tab-padded symbol sails
+    through `gene = trim(gene)` and then matches nothing. The schema passes the
+    explicit character set for that reason.
+    """
+    padded = {
+        "leading": blank + "CYP2C19",
+        "trailing": "CYP2C19" + blank,
+        "both": blank + "CYP2C19" + blank,
+    }[side]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.append(
+            "s9",
+            [GeneCall(padded, "*1/*2", "Intermediate Metabolizer", CALLED)],
+            guideline_version="cpic-2026-07",
+        )
+    assert store.history("s9") == []
+    assert store.subjects_with_gene("CYP2C19") == []
+
+
+def test_a_padded_or_case_variant_gene_is_rejected_via_raw_sql_too(store):
+    """The guarantee is the schema's, not append()'s: a raw INSERT is refused too."""
+    record_id = store.append("s1", CALLS, guideline_version="cpic-2026-07")
+    conn = raw(store)
+    try:
+        for bad in ("cyp2c9", "Cyp2c9", " CYP2C9", "CYP2C9\t", "\nCYP2C9"):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO gene_calls (record_id, gene, diplotype, "
+                    "phenotype, coverage) VALUES (?, ?, ?, ?, ?)",
+                    (record_id, bad, "*1/*2", "Intermediate Metabolizer", CALLED),
+                )
+    finally:
+        conn.close()
+    assert len(store.record_calls(record_id)) == len(CALLS)
+
+
+def test_a_null_gene_is_still_rejected(store):
+    """NOT NULL is load-bearing, not decoration.
+
+    A CHECK that evaluates to NULL counts as SATISFIED, and `NULL = upper(NULL)`
+    is NULL -- so the case clause alone would admit the very row it exists to
+    reject. NOT NULL is what actually stops it, and this pins that.
+    """
+    record_id = store.append("s1", CALLS, guideline_version="cpic-2026-07")
+    conn = raw(store)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO gene_calls (record_id, gene, diplotype, "
+                "phenotype, coverage) VALUES (?, ?, ?, ?, ?)",
+                (record_id, None, None, None, NOT_COVERED),
+            )
+    finally:
+        conn.close()
+    assert len(store.record_calls(record_id)) == len(CALLS)
+
+
+@pytest.mark.parametrize("gene", [pytest.param(g, id=g) for g in REAL_GENES])
+def test_every_real_gene_symbol_still_round_trips(store, gene):
+    """Digits and the HLA-B hyphen are legitimate; the CHECK must not touch them."""
+    record_id = store.append(
+        "s1",
+        [GeneCall(gene, "*1/*1", "Normal Metabolizer", CALLED)],
+        guideline_version="cpic-2026-07",
+    )
+    call = store.record_calls(record_id)[0]
+    assert call.gene == gene
+    assert call.diplotype == "*1/*1"
+    assert store.subjects_with_gene(gene) == ["s1"]
+
+
+def test_all_real_gene_symbols_store_together_in_one_record(store):
+    """The whole panel in a single transaction: no symbol aborts the write."""
+    record_id = store.append(
+        "s1",
+        [GeneCall(g, "*1/*1", "Normal Metabolizer", CALLED) for g in REAL_GENES],
+        guideline_version="cpic-2026-07",
+    )
+    assert sorted(c.gene for c in store.record_calls(record_id)) == sorted(
+        REAL_GENES
+    )
+
+
+def test_an_uncalled_real_gene_symbol_round_trips_too(store):
+    """The case check is independent of coverage: not_covered rows pass it too."""
+    record_id = store.append(
+        "s1",
+        [GeneCall(g, None, None, NOT_COVERED) for g in REAL_GENES],
+        guideline_version="cpic-2026-07",
+    )
+    assert {c.coverage for c in store.record_calls(record_id)} == {NOT_COVERED}
+    assert store.subjects_with_gene("HLA-B") == ["s1"]
+
+
+def test_a_rejected_gene_case_does_not_bypass_the_append_only_triggers(store):
+    """The case CHECK must not have loosened the REPLACE-on-rowid protection.
+
+    `WITHOUT ROWID` is what closed that door; adding a column constraint is
+    exactly the kind of schema edit that could drop it by accident. Asserted
+    here alongside the case rules so the two cannot drift apart.
+    """
+    record_id = store.append("s1", CALLS, guideline_version="cpic-2026-07")
+    conn = raw(store)
+    try:
+        # No rowid to aim a REPLACE at.
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("SELECT rowid FROM gene_calls").fetchall()
+        # And REPLACE on the real key is still refused, uppercase gene or not.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT OR REPLACE INTO gene_calls (record_id, gene, diplotype, "
+                "phenotype, coverage) VALUES (?, ?, ?, ?, ?)",
+                (record_id, "CYP2C19", "*9/*9", "Poor Metabolizer", CALLED),
+            )
+    finally:
+        conn.close()
+    assert store.record_calls(record_id) == sorted(CALLS, key=lambda c: c.gene)
+
+
 # --- Coverage states survive the round trip ---------------------------------
 
 

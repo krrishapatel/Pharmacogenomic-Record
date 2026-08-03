@@ -76,7 +76,41 @@ CREATE TABLE IF NOT EXISTS records (
 -- its primary-key trigger sees the conflict.
 CREATE TABLE IF NOT EXISTS gene_calls (
     record_id INTEGER NOT NULL REFERENCES records(record_id),
-    gene TEXT NOT NULL CHECK ({_non_blank("gene")}),
+    -- Gene symbols are joined across layers by exact string equality:
+    -- `subjects_with_gene` compares with `g.gene = ?` and `query_drug` looks the
+    -- gene up as a dict key, while the guideline table is force-uppercased by
+    -- guidelines.normalize_gene. A stored "cyp2c19" or " CYP2C19" therefore
+    -- matches nothing: the subject is not reported as affected, drops out of
+    -- drift reports, and reads as "no data for this gene" -- a confident wrong
+    -- answer with no error anywhere. HGNC symbols are uppercase by definition,
+    -- so the canonical form is checkable rather than a guess.
+    --
+    -- Rejected here rather than upcased in Python on the way in, deliberately.
+    -- Every PX= tag in the pinned PharmCAT positions table is uppercase; a
+    -- lowercase symbol arriving means that property of an external tool's
+    -- output has changed, and silently folding it would hide the version skew
+    -- while this code kept resting on the assumption. Failing at the write is
+    -- the only place the truth is still recoverable.
+    --
+    -- Two caveats this expression lives with, neither of which weakens it for
+    -- real symbols (ASCII alphanumerics plus '-'):
+    --   * sqlite's upper() folds ASCII only, so a non-ASCII symbol satisfies
+    --     `gene = upper(gene)` yet still fails to match Python's str.upper()
+    --     downstream. The CHECK narrows the hole, it does not close it.
+    --   * a CHECK that evaluates to NULL counts as satisfied, and
+    --     `NULL = upper(NULL)` is NULL -- so this clause alone would admit a
+    --     NULL gene. NOT NULL above is what actually rejects it, and is load
+    --     bearing for that reason, not decoration.
+    -- Leading/trailing whitespace is pinned too: " CYP2C19" is invisible to the
+    -- same lookups for the same reason, and multi-character trim() is used
+    -- because the one-argument form strips spaces only (see _BLANK_CHARS).
+    -- Internal whitespace is left alone -- no real symbol has any, and
+    -- rejecting a legitimate symbol would be worse than the bug.
+    gene TEXT NOT NULL CHECK (
+        {_non_blank("gene")}
+        AND gene = upper(gene)
+        AND gene = trim(gene, {_BLANK_CHARS})
+    ),
     diplotype TEXT,
     phenotype TEXT,
     coverage TEXT NOT NULL CHECK (coverage IN ({_COVERAGE_LIST})),
