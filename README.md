@@ -194,6 +194,16 @@ $ pharmacogenomic-record --db records.db drift --changed-pair CYP2D6-codeine
 This output is a reference to published CPIC citations, keyed on stored gene calls. It is not a medical device, not clinical decision support, and not a basis for any treatment decision.
 ```
 
+A mistyped pair id gets a **warning**, never the reassuring "touches nobody"
+negative a real-but-unmatched pair would get — an id that matched nothing was
+never checked, and that is not the same as a revision touching nobody:
+
+```
+$ pharmacogenomic-record --db records.db drift --changed-pair CYP2D6-codiene
+WARNING: changed pair(s) CYP2D6-codiene match no CPIC gene-drug pair in this table. This is almost certainly a mistyped id; nothing was checked for it, which is not the same as its revision touching nobody. Verify the id against cpicpgx.org.
+This output is a reference to published CPIC citations, keyed on stored gene calls. It is not a medical device, not clinical decision support, and not a basis for any treatment decision.
+```
+
 ## What it does not do
 
 - **Call star alleles.** PharmCAT does that; the image is pinned and the logic is

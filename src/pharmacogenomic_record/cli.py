@@ -52,7 +52,11 @@ from pharmacogenomic_record.evaluate import (
     overall_outcome,
     query_drug,
 )
-from pharmacogenomic_record.guidelines import GuidelineTableError, load_pairs
+from pharmacogenomic_record.guidelines import (
+    GuidelineTableError,
+    load_pairs,
+    normalize_pair_id,
+)
 from pharmacogenomic_record.ingest.raw import UnsupportedRawFile, parse_23andme
 from pharmacogenomic_record.ingest.vcf import CoverageReport, build_vcf
 from pharmacogenomic_record.positions import load_positions
@@ -235,26 +239,60 @@ def cmd_drift(
     one-element list. `affected_by_guideline_change` raises on a bare string on
     purpose -- iterating one would compare its characters and report that the
     revision affected nobody.
+
+    Two negatives are kept apart here. "The revision touches no stored record"
+    is a genuine answer about the store. "Your id matched no known CPIC pair" is
+    a report about the *request* -- almost always a typo -- and must never wear
+    the shape of the first, because a user who mistypes `CYP2D6-codiene` and
+    reads "no stored record ... touches" hears an all-clear about the pair they
+    meant, when in fact nothing was ever checked. That is the same collapse
+    `cannot_assess` exists to prevent, one command over: an absence of a match
+    is not an absence of an interaction. The known-id check is done here rather
+    than in `drift.py` so its signature and its deliberate bare-string guard are
+    left untouched; `normalize_pair_id` is the same comparison form
+    `affected_by_guideline_change` matches on, so an id counts as "known" here
+    exactly when it could have matched a pair there.
     """
     pairs = load_pairs(pairs_path)
     affected = affected_by_guideline_change(store, list(changed_pair_ids), pairs)
 
-    ids = ", ".join(changed_pair_ids)
-    if not affected:
-        # An explicit negative, and scoped to what it actually establishes. This
-        # says which records the revision touches; it says nothing about whether
-        # the revision matters to anyone whose genotype we have never seen.
+    known = {normalize_pair_id(pair.cpic_pair_id) for pair in pairs}
+    unknown = [
+        pair_id
+        for pair_id in changed_pair_ids
+        if normalize_pair_id(pair_id) not in known
+    ]
+    if unknown:
+        # A report about the request, not the store, so it is surfaced whether or
+        # not other ids in the same invocation matched. Worded as a warning the
+        # reassurance checks would reject: an unrecognized id is a likely typo,
+        # and a typo silently treated as "nothing to report" is the failure this
+        # branch exists to prevent.
         print(
-            f"No stored record holds a gene belonging to the changed pair(s) "
-            f"{ids}. That states only which stored records this revision "
-            f"touches."
+            f"WARNING: changed pair(s) {', '.join(unknown)} match no CPIC "
+            f"gene-drug pair in this table. This is almost certainly a mistyped "
+            f"id; nothing was checked for it, which is not the same as its "
+            f"revision touching nobody. Verify the id against cpicpgx.org."
         )
-    else:
+
+    ids = ", ".join(changed_pair_ids)
+    if affected:
         for record in affected:
             print(
                 f"[AFFECTED] subject {record.subject_id} gene {record.gene} "
                 f"pair(s) {', '.join(record.changed_pair_ids)}"
             )
+    elif not unknown:
+        # A genuine negative, and scoped to what it actually establishes. This
+        # says which records the revision touches; it says nothing about whether
+        # the revision matters to anyone whose genotype we have never seen. Only
+        # reached when every requested id was a real pair -- so it can never be
+        # the answer a typo receives.
+        print(
+            f"No stored record holds a gene belonging to the changed pair(s) "
+            f"{ids}. That states only which stored records this revision "
+            f"touches."
+        )
     print(_DISCLAIMER)
 
 

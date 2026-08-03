@@ -658,6 +658,30 @@ def test_drift_reports_affected_subjects_including_uncovered_genes(store, capsys
     assert "CYP2D6-codeine" in out
 
 
+def test_drift_marks_each_affected_record_so_a_dropped_list_fails_here_too(
+    store, capsys
+):
+    """A second CLI test on the affected branch.
+
+    A regression that dropped the affected records (`affected = []`) was caught
+    by only one CLI test, because the "no stored record" negative it fell back
+    to still echoes the pair id every other assertion looked for. This anchors
+    on the `[AFFECTED]` marker, which the negative branch never prints, so the
+    dropped-records path is caught by more than one test.
+    """
+    store.append(
+        "s1",
+        [GeneCall("CYP2D6", None, None, NOT_COVERED)],
+        guideline_version="cpic-2026-07",
+    )
+
+    cmd_drift(store, ["CYP2D6-codeine"], pairs_path=PAIRS)
+    out = capsys.readouterr().out
+
+    assert "[AFFECTED]" in out
+    assert "no stored record" not in out.lower()
+
+
 def test_drift_prints_an_explicit_negative_when_nobody_is_affected(store, capsys):
     store.append(
         "s1",
@@ -670,6 +694,65 @@ def test_drift_prints_an_explicit_negative_when_nobody_is_affected(store, capsys
 
     assert "no stored record" in out.lower()
     assert out.strip()
+
+
+def test_drift_unknown_pair_id_is_not_reported_as_a_genuine_negative(store, capsys):
+    """A typo'd pair id must warn, not borrow the shape of "touches nobody".
+
+    `--changed-pair CYP2D6-codiene` (a misspelling absent from the table) and a
+    real pair that simply matches no stored record are two different facts: the
+    first means "your id matched nothing", the second means "the revision
+    touches nobody stored". Printing the same reassuring negative for a typo is
+    the same class of danger as `cannot_assess` reading like an all-clear -- the
+    user thinks they got an answer about the pair they meant.
+    """
+    store.append(
+        "s1",
+        [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        guideline_version="cpic-2026-07",
+    )
+
+    # A genuine negative: a real pair, but no stored record holds its gene.
+    cmd_drift(store, ["CYP2D6-codeine"], pairs_path=PAIRS)
+    genuine = capsys.readouterr().out
+
+    # A typo: the id matches no gene-drug pair in the table at all.
+    cmd_drift(store, ["CYP2D6-codiene"], pairs_path=PAIRS)
+    typo = capsys.readouterr().out
+
+    # The two negatives must not read identically.
+    assert genuine != typo
+    # The genuine negative is the "revision touches nobody stored" statement.
+    assert "no stored record holds" in genuine.lower()
+    # The typo must NOT reuse that statement; that would read as an all-clear
+    # about a pair that was never actually checked.
+    assert "no stored record holds" not in typo.lower()
+    # It names the bad id, warns, and does not read as reassurance.
+    assert "CYP2D6-codiene" in typo
+    assert_no_reassurance(typo)
+
+
+def test_drift_warns_on_a_typo_even_alongside_a_real_match(store, capsys):
+    """A good id and a bad id together: report the match, still flag the typo.
+
+    The warning about the unknown id must not be swallowed just because another
+    id in the same invocation did match something.
+    """
+    store.append(
+        "s1",
+        [GeneCall("CYP2D6", None, None, NOT_COVERED)],
+        guideline_version="cpic-2026-07",
+    )
+
+    cmd_drift(store, ["CYP2D6-codeine", "CYP2D6-codiene"], pairs_path=PAIRS)
+    out = capsys.readouterr().out
+
+    # The real pair still produces its affected line...
+    assert "[AFFECTED]" in out
+    assert "s1" in out
+    # ...and the typo is still flagged, naming only the unknown id.
+    assert "CYP2D6-codiene" in out
+    assert_no_reassurance(out)
 
 
 def test_main_drift_passes_a_collection_not_a_bare_string(tmp_path, capsys):
