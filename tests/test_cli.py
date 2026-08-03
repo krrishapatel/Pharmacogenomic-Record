@@ -116,6 +116,62 @@ def store(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# README honesty: coverage numbers are fixture outputs, not a "real export".
+# --------------------------------------------------------------------------
+
+
+README = REPO_ROOT / "README.md"
+
+
+def test_readme_does_not_attribute_fixture_counts_to_a_real_export():
+    """The 4-of-1226 figure is a toy fixture, never a measured personal genome.
+
+    A real consumer array covers far more than four positions; "4 covered" is a
+    property of the 10-line `23andme_valid.txt` fixture. Claiming it was
+    "measured on a real 23andMe export" is false provenance -- it dresses a test
+    artifact up as a measurement of someone's array. This pins the README so
+    that claim cannot creep back in.
+    """
+    text = README.read_text(encoding="utf-8").lower()
+
+    assert "real 23andme export" not in text
+    assert "measured on a real" not in text
+
+
+def test_readme_ingest_examples_are_regenerable_from_the_named_fixtures(tmp_path):
+    """Every coverage count shown for a fixture must be what that fixture yields.
+
+    The README's example blocks are labelled as bundled-fixture output, not a
+    personal genome. This regenerates the numbers for each fixture the README
+    quotes and asserts the pasted figures are real, so a stale or invented count
+    cannot survive in the docs.
+    """
+    text = README.read_text(encoding="utf-8")
+
+    for fixture_name, expected in [
+        ("23andme_valid.txt", {"covered": 4, "uncovered": 1014, "full": 0}),
+        ("23andme_full_cyp2c19.txt", {"covered": 36, "uncovered": 982, "full": 2}),
+    ]:
+        _vcf, report = ingest_to_calls(
+            FIXTURES / fixture_name, POSITIONS, tmp_path / fixture_name
+        )
+        # The fixture really does yield the numbers the README pastes.
+        assert len(report.covered_rsids) == expected["covered"]
+        assert len(report.uncovered_rsids) == expected["uncovered"]
+        assert len(report.genes_fully_covered) == expected["full"]
+        assert report.unjoinable_positions == 208
+
+        # ...and those exact lines appear in the README, next to the fixture name.
+        assert fixture_name in text
+        assert f"covered positions: {expected['covered']}" in text
+        assert f"uncovered positions: {expected['uncovered']}" in text
+        assert (
+            f"genes fully covered (eligible to be called): {expected['full']}"
+            in text
+        )
+
+
+# --------------------------------------------------------------------------
 # The reference tables are located as package data, not by a filesystem walk.
 # --------------------------------------------------------------------------
 

@@ -60,20 +60,23 @@ it was not given, so a gene with 39 of 40 positions covered still yields a
 confident "*1/*1 Normal Metabolizer" — and the missing position is exactly where
 a variant would have been.
 
-Consumer arrays genotype a very sparse subset of these positions. Measured on a
-real 23andMe export against `pharmcat_positions_3.4.0.vcf`:
+Two facts about `pharmcat_positions_3.4.0.vcf` itself are fixed and verified
+(see `tests/test_reference_data.py`), independent of any array:
 
-- **4 of 1226** positions covered
-- 1014 joinable positions uncovered
-- 208 positions carry no rsID at all, so they can never be joined from a 23andMe
-  file under any circumstances
+- the table has **1226 positions**;
+- **208 of them carry no rsID at all**, so they can never be joined from a
+  23andMe file under any circumstances, no matter how good the array is.
 
-**So under the strict rule nearly every gene comes out `indeterminate` or
-`not_covered`, and `called` is rare. That is the truthful result for a sparse
-consumer array, not a defect in this tool.** If you run it on your own export
-and it mostly says "cannot assess", it is working correctly and telling you
-something real: your array did not measure enough of those genes to support a
-confident answer.
+A consumer array genotypes only a very sparse subset of the 1018 rsID-bearing
+positions. So under the strict rule nearly every gene comes out `indeterminate`
+or `not_covered`, and `called` is rare — and that is the truthful result for a
+sparse consumer array, not a defect in this tool. If you run it on your own
+export and it mostly says "cannot assess", it is working correctly and telling
+you something real: your array did not measure enough of those genes to support
+a confident answer. This project does not ship anyone's real genome, so the
+concrete covered/uncovered counts shown below are from the small bundled test
+fixtures, not a measurement of any personal array; a real export would cover
+more positions than a fixture, but still a sparse subset of the 1018.
 
 Two further limits on the join, both structural:
 
@@ -96,14 +99,19 @@ pharmacogenomic-record --db records.db query clopidogrel --subject me
 pharmacogenomic-record --db records.db drift --changed-pair CYP2D6-codeine
 ```
 
-### Real output
+### Example output
 
-Every block below is verbatim output from this tool, not an illustration.
+Every block below is verbatim output from this tool, not an illustration. The
+inputs are the small **bundled test fixtures** under `tests/fixtures/`, not
+anyone's real genome — the command line names the fixture in each case. The
+numbers are therefore properties of those fixtures, reproducible by running the
+commands shown; they are not a measurement of any personal array.
 
 **Ingest.** Coverage is reported before PharmCAT is invoked, so a run that fails
 at the Docker step has still told you what your array covers. This machine has
 no Docker, which is why the run ends where it does — and note that the failure is
-surfaced loudly and no record is written:
+surfaced loudly and no record is written. The `23andme_valid.txt` fixture is a
+10-line sample that covers just 4 positions:
 
 ```
 $ pharmacogenomic-record --db records.db ingest tests/fixtures/23andme_valid.txt --subject me --workdir work
@@ -119,8 +127,26 @@ $ echo $?
 1
 ```
 
-Those 4 covered positions are the honest result described above: zero genes
-eligible to be called.
+Those 4 covered positions (out of the 1226 in the table, 208 of which carry no
+rsID) leave zero genes eligible to be called — the sparse-array result the
+strict rule is built for. A larger fixture,
+`tests/fixtures/23andme_full_cyp2c19.txt` — which is **synthetic**, engineered
+to cover every rsID-joinable CYP2C19 and VKORC1 position — reports 36 covered
+positions and two fully covered genes, showing the other side of the rule:
+
+```
+$ pharmacogenomic-record --db records.db ingest tests/fixtures/23andme_full_cyp2c19.txt --subject me --workdir work
+wrote work/23andme_full_cyp2c19.vcf
+covered positions: 36
+uncovered positions: 982
+positions with no rsID, unjoinable from a 23andMe file: 208
+genes fully covered (eligible to be called): 2 -- CYP2C19, VKORC1
+genes partially covered (recorded indeterminate): 0
+genes with no coverage (recorded not_covered): 20 -- ABCG2, CACNA1S, CFTR, CYP2B6, CYP2C9, CYP2D6, CYP3A4, CYP3A5, CYP4F2, DPYD, F2, F5, G6PD, IFNL3, NAT2, NUDT15, RYR1, SLCO1B1, TPMT, UGT1A1
+error: docker not found on PATH; cannot run PharmCAT
+$ echo $?
+1
+```
 
 **`guidance_found`** — a gene whose every joinable position was covered, so
 PharmCAT's call is allowed through:
