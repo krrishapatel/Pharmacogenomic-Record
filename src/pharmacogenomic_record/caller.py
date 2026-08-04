@@ -303,26 +303,40 @@ def parse_phenotype_json(
     path: Path,
     uncovered_genes: Iterable[str],
     partially_covered_genes: Iterable[str],
+    fully_covered_genes: Iterable[str],
 ) -> list[GeneCall]:
     """Translate PharmCAT phenotype output into GeneCall records.
 
     Coverage beats PharmCAT, always, and the precedence is strict:
-    uncovered_genes > partially_covered_genes > PharmCAT output.
+    uncovered_genes > partially_covered_genes > (only if fully covered) PharmCAT
+    output. Anything else -- a gene PharmCAT reports that is not POSITIVELY known
+    to be fully covered -- defaults to indeterminate.
 
-    uncovered_genes (Task 9: CoverageReport.genes_fully_uncovered) is a gene the
-    array never informed at all -- no PharmCAT output about it can be treated as
-    a call. partially_covered_genes (CoverageReport.genes_partially_covered) is
+    uncovered_genes (CoverageReport.genes_fully_uncovered) is a gene the array
+    never informed at all -- no PharmCAT output about it can be treated as a
+    call. partially_covered_genes (CoverageReport.genes_partially_covered) is
     worse than it looks: PharmCAT assumes reference at unobserved positions, so
     a gene with 1 of 40 positions covered still yields a confident "*1/*1
     Normal Metabolizer". That is the most dangerous output this software can
     produce, so partial coverage is reported as indeterminate.
 
-    Both arguments accept any iterable of gene names and are normalized to
-    frozenset. Neither has a default: a coverage guard that can be omitted is a
+    fully_covered_genes (CoverageReport.genes_fully_covered) is the ONLY set
+    whose members may reach PharmCAT's own answer, and membership is decided by
+    EXPLICIT presence, never by omission. `CoverageReport`'s three sets
+    partition only the genes carrying a PX= tag in the position table, so a gene
+    PharmCAT reports in `phenotypes` can be in none of them -- under a PharmCAT
+    upgrade or an outside-calls file. Treating "in neither uncovered nor partial"
+    as "fully covered" would let such a gene reach `called` with zero coverage
+    evidence: a confident citation for a gene the array never informed. So a
+    gene not positively in fully_covered_genes defaults to indeterminate.
+
+    All three arguments accept any iterable of gene names and are normalized to
+    frozenset. None has a default: a coverage guard that can be omitted is a
     guard that will be omitted.
     """
     uncovered = frozenset(uncovered_genes)
     partial = frozenset(partially_covered_genes) - uncovered
+    fully_covered = frozenset(fully_covered_genes) - uncovered - partial
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -352,8 +366,14 @@ def parse_phenotype_json(
             calls.append(GeneCall(gene, None, None, NOT_COVERED))
         elif gene in partial:
             calls.append(GeneCall(gene, None, None, INDETERMINATE))
-        else:
+        elif gene in fully_covered:
             calls.append(_resolve(gene, entry))
+        else:
+            # Not positively known to be fully covered: a gene PharmCAT reports
+            # that is in none of the coverage sets has no coverage evidence
+            # behind it, so it must not reach `called`. Default to
+            # indeterminate rather than trusting PharmCAT's reference assumption.
+            calls.append(GeneCall(gene, None, None, INDETERMINATE))
 
     for gene in sorted(uncovered - seen):
         calls.append(GeneCall(gene, None, None, NOT_COVERED))

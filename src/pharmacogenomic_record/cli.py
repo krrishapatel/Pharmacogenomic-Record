@@ -124,23 +124,27 @@ def calls_from_phenotype(
     """Translate PharmCAT output under the coverage report's strict rule.
 
     The only place the two modules meet, and the reason it is a named function
-    rather than two keyword arguments at the call site: the three sets have to
+    rather than three keyword arguments at the call site: the three sets have to
     stay coherent, and `parse_phenotype_json` cannot check that for us.
 
-    `genes_fully_covered` is passed by OMISSION -- it is the only set whose
-    members are allowed to reach PharmCAT's own answer. Passing
-    `genes_partially_covered` where the older, looser field of the same name
-    once lived would send every gene with a single covered position through as
-    eligible to be called, so the mapping is stated explicitly here:
+    `genes_fully_covered` is passed EXPLICITLY -- it is the only set whose
+    members are allowed to reach PharmCAT's own answer, and membership must be
+    positive, never inferred by omission. `CoverageReport`'s three sets
+    partition only the genes carrying a PX= tag in the position table, so a gene
+    PharmCAT reports in `phenotypes` that is in none of them (live under a
+    PharmCAT upgrade or an outside-calls file) must NOT be assumed fully
+    covered. The mapping is one-to-one and stated here:
 
-        genes_fully_uncovered    -> uncovered_genes        -> not_covered
-        genes_partially_covered  -> partially_covered_genes -> indeterminate
-        genes_fully_covered      -> neither                -> PharmCAT decides
+        genes_fully_uncovered    -> uncovered_genes         -> not_covered
+        genes_partially_covered  -> partially_covered_genes  -> indeterminate
+        genes_fully_covered      -> fully_covered_genes      -> PharmCAT decides
+        (anything else)          -> none                     -> indeterminate
     """
     return parse_phenotype_json(
         phenotype_json,
         uncovered_genes=report.genes_fully_uncovered,
         partially_covered_genes=report.genes_partially_covered,
+        fully_covered_genes=report.genes_fully_covered,
     )
 
 

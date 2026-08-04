@@ -8,6 +8,16 @@ from pharmacogenomic_record.caller import GeneCall, PharmcatError, parse_phenoty
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SAMPLE = FIXTURES / "pharmcat_phenotype_sample.json"
 
+# Every gene these tests feed PharmCAT output for. Passed as the fully-covered
+# set wherever a test means "the array informed every position of this gene",
+# so the gene reaches PharmCAT's own answer (`_resolve`) rather than defaulting
+# to indeterminate under the strict rule. A gene absent from the output is never
+# synthesized from this set -- only uncovered/partial genes are -- so listing a
+# superset is safe and does not weaken any assertion.
+ALL_TEST_GENES = {
+    "CYP2C19", "DPYD", "TPMT", "CYP2D6", "CYP2C9", "G6PD", "F5", "NAT2",
+}
+
 
 def write_payload(tmp_path, phenotypes, name="phenotype.json"):
     """Write an inline PharmCAT-shaped payload so the committed fixture stays real."""
@@ -27,7 +37,8 @@ def diplotype(label, allele1, allele2, phenotypes):
 
 def test_parses_called_genes():
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes=set(), partially_covered_genes=set()
+        SAMPLE, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
     by_gene = {c.gene: c for c in calls}
 
@@ -54,7 +65,8 @@ def test_indeterminate_phenotype_is_not_called(tmp_path):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -69,7 +81,8 @@ def test_committed_fixture_null_allele_gene_is_indeterminate():
     committed realistic sample, where the no-call is expressed structurally.
     """
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes=set(), partially_covered_genes=set()
+        SAMPLE, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
     tpmt = next(c for c in calls if c.gene == "TPMT")
 
@@ -97,7 +110,8 @@ def test_null_alleles_are_the_no_call_signal(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -133,7 +147,8 @@ def test_unnamed_allele_is_a_no_call(tmp_path, allele2):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
     assert call.coverage == "indeterminate"
     assert call.diplotype is None
@@ -159,7 +174,8 @@ def test_indeterminate_phenotype_string_downgrades_a_complete_diplotype(
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -186,7 +202,8 @@ def test_multiple_candidate_diplotypes_are_indeterminate(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -209,7 +226,8 @@ def test_identical_candidate_labels_still_called(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "called"
@@ -237,7 +255,8 @@ def test_same_label_conflicting_phenotypes_is_indeterminate(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -260,7 +279,8 @@ def test_same_label_conflicting_allele_names_is_indeterminate(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -291,7 +311,8 @@ def test_a_no_call_candidate_anywhere_blocks_the_call(tmp_path):
         },
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -319,7 +340,8 @@ def test_non_string_label_on_a_later_candidate_raises(tmp_path):
     )
     with pytest.raises(PharmcatError, match="non-string label"):
         parse_phenotype_json(
-            path, uncovered_genes=set(), partially_covered_genes=set()
+            path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -332,7 +354,8 @@ def test_named_alleles_with_a_null_label_is_indeterminate(tmp_path):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -355,7 +378,8 @@ def test_additional_indeterminate_markers_downgrade_a_complete_diplotype(
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "indeterminate"
@@ -396,7 +420,8 @@ def test_legitimate_cpic_phenotypes_are_never_downgraded(tmp_path, phenotype):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "called"
@@ -425,7 +450,8 @@ def test_g6pd_place_named_alleles_are_called(tmp_path, allele1, allele2, label):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "called"
@@ -449,7 +475,8 @@ def test_gene_without_a_phenotype_is_still_called(tmp_path):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
 
     assert call.coverage == "called"
@@ -466,7 +493,8 @@ def test_no_function_phenotype_is_not_indeterminate(tmp_path):
         ]}},
     )
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
     assert call.coverage == "called"
 
@@ -474,7 +502,8 @@ def test_no_function_phenotype_is_not_indeterminate(tmp_path):
 def test_empty_diplotype_list_is_indeterminate(tmp_path):
     path = write_payload(tmp_path, {"NAT2": {"gene": "NAT2", "diplotypes": []}})
     (call,) = parse_phenotype_json(
-        path, uncovered_genes=set(), partially_covered_genes=set()
+        path, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
     )
     assert call.coverage == "indeterminate"
 
@@ -482,7 +511,8 @@ def test_empty_diplotype_list_is_indeterminate(tmp_path):
 def test_uncovered_genes_are_marked_not_covered():
     """A gene absent from the array must never be reported as called."""
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes={"CYP2D6", "DPYD"}, partially_covered_genes=set()
+        SAMPLE, uncovered_genes={"CYP2D6", "DPYD"}, partially_covered_genes=set(),
+        fully_covered_genes={"CYP2C19"}
     )
     by_gene = {c.gene: c for c in calls}
 
@@ -498,7 +528,8 @@ def test_partially_covered_gene_is_indeterminate():
     """PharmCAT assumes reference at unobserved positions, so its confident
     Normal Metabolizer for a barely-measured gene must not be trusted."""
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes=set(), partially_covered_genes={"DPYD"}
+        SAMPLE, uncovered_genes=set(), partially_covered_genes={"DPYD"},
+        fully_covered_genes={"CYP2C19"}
     )
     dpyd = next(c for c in calls if c.gene == "DPYD")
 
@@ -509,7 +540,8 @@ def test_partially_covered_gene_is_indeterminate():
 
 def test_partially_covered_gene_absent_from_pharmcat_output():
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes=set(), partially_covered_genes={"NUDT15"}
+        SAMPLE, uncovered_genes=set(), partially_covered_genes={"NUDT15"},
+        fully_covered_genes={"CYP2C19", "DPYD"}
     )
     nudt15 = next(c for c in calls if c.gene == "NUDT15")
     assert nudt15 == GeneCall("NUDT15", None, None, "indeterminate")
@@ -518,7 +550,8 @@ def test_partially_covered_gene_absent_from_pharmcat_output():
 def test_uncovered_beats_partially_covered():
     """Precedence is strict: uncovered > partial > PharmCAT output."""
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes={"DPYD"}, partially_covered_genes={"DPYD"}
+        SAMPLE, uncovered_genes={"DPYD"}, partially_covered_genes={"DPYD"},
+        fully_covered_genes={"CYP2C19"}
     )
     dpyd = [c for c in calls if c.gene == "DPYD"]
 
@@ -532,6 +565,7 @@ def test_uncovered_beats_partially_covered_when_absent_from_output():
         SAMPLE,
         uncovered_genes={"NUDT15"},
         partially_covered_genes={"NUDT15"},
+        fully_covered_genes={"CYP2C19", "DPYD"},
     )
     nudt15 = [c for c in calls if c.gene == "NUDT15"]
 
@@ -543,6 +577,7 @@ def test_no_gene_is_reported_twice():
         SAMPLE,
         uncovered_genes={"CYP2D6", "DPYD"},
         partially_covered_genes={"CYP2D6", "DPYD", "NAT2", "CYP2C19"},
+        fully_covered_genes=set(),
     )
     genes = [c.gene for c in calls]
     assert len(genes) == len(set(genes))
@@ -555,7 +590,8 @@ def test_the_three_coverage_states_do_not_collapse():
     is precisely the failure this software must never have.
     """
     calls = parse_phenotype_json(
-        SAMPLE, uncovered_genes={"CYP2D6"}, partially_covered_genes={"NAT2"}
+        SAMPLE, uncovered_genes={"CYP2D6"}, partially_covered_genes={"NAT2"},
+        fully_covered_genes={"CYP2C19", "DPYD"}
     )
     states = {c.gene: c.coverage for c in calls}
 
@@ -570,12 +606,63 @@ def test_the_three_coverage_states_do_not_collapse():
     assert set(states.values()) == {"called", "not_covered", "indeterminate"}
 
 
+def test_gene_not_positively_fully_covered_defaults_to_indeterminate(tmp_path):
+    """The pass-by-omission hole: a gene in PharmCAT's output but in NONE of the
+    coverage sets must NOT reach `called`.
+
+    `CoverageReport`'s three sets partition only the genes carrying a PX= tag in
+    the position table. A gene PharmCAT reports in `phenotypes` that is in none
+    of the three sets used to fall through the else-branch and be resolved to a
+    confident call with zero coverage evidence. Only a gene POSITIVELY known to
+    be fully covered may reach PharmCAT's own answer; anything else defaults to
+    indeterminate. Reverting to pass-by-omission (resolving the else-branch)
+    makes this fail.
+    """
+    path = write_payload(
+        tmp_path,
+        {"HLA-B": {"gene": "HLA-B", "diplotypes": [
+            diplotype("*57:01/*57:01", "*57:01", "*57:01", ["Positive"])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path,
+        uncovered_genes=set(),
+        partially_covered_genes=set(),
+        fully_covered_genes=set(),  # HLA-B is not positively fully covered
+    )
+
+    assert call.coverage == "indeterminate"
+    assert call.diplotype is None
+    assert call.phenotype is None
+
+
+def test_a_positively_fully_covered_gene_reaches_pharmcats_call(tmp_path):
+    """The same gene, now explicitly fully covered, reaches PharmCAT's answer."""
+    path = write_payload(
+        tmp_path,
+        {"HLA-B": {"gene": "HLA-B", "diplotypes": [
+            diplotype("*57:01/*57:01", "*57:01", "*57:01", ["Positive"])
+        ]}},
+    )
+    (call,) = parse_phenotype_json(
+        path,
+        uncovered_genes=set(),
+        partially_covered_genes=set(),
+        fully_covered_genes={"HLA-B"},
+    )
+
+    assert call.coverage == "called"
+    assert call.diplotype == "*57:01/*57:01"
+    assert call.phenotype == "Positive"
+
+
 def test_malformed_json_raises(tmp_path):
     bad = tmp_path / "pharmcat_malformed.json"
     bad.write_text("{not json")
     with pytest.raises(PharmcatError, match="parse"):
         parse_phenotype_json(
-            bad, uncovered_genes=set(), partially_covered_genes=set()
+            bad, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -593,7 +680,8 @@ def test_wrong_shaped_payload_raises(tmp_path, payload):
     bad.write_text(json.dumps(payload))
     with pytest.raises(PharmcatError, match="phenotypes"):
         parse_phenotype_json(
-            bad, uncovered_genes=set(), partially_covered_genes=set()
+            bad, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -602,7 +690,8 @@ def test_non_dict_json_raises(tmp_path):
     bad.write_text("[1, 2, 3]")
     with pytest.raises(PharmcatError, match="not a JSON object"):
         parse_phenotype_json(
-            bad, uncovered_genes=set(), partially_covered_genes=set()
+            bad, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -611,7 +700,8 @@ def test_non_utf8_output_raises(tmp_path):
     bad.write_bytes(b"\xff\xfe\x00not utf-8")
     with pytest.raises(PharmcatError, match="parse"):
         parse_phenotype_json(
-            bad, uncovered_genes=set(), partially_covered_genes=set()
+            bad, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -631,7 +721,8 @@ def test_unparseable_gene_entry_raises_pharmcat_error(tmp_path, entry):
     bad.write_text(json.dumps({"phenotypes": {"TPMT": entry}}))
     with pytest.raises(PharmcatError):
         parse_phenotype_json(
-            bad, uncovered_genes=set(), partially_covered_genes=set()
+            bad, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -640,7 +731,8 @@ def test_empty_result_with_no_coverage_information_raises(tmp_path):
     empty.write_text(json.dumps({"phenotypes": {}}))
     with pytest.raises(PharmcatError, match="nothing to record"):
         parse_phenotype_json(
-            empty, uncovered_genes=set(), partially_covered_genes=set()
+            empty, uncovered_genes=set(), partially_covered_genes=set(),
+        fully_covered_genes=ALL_TEST_GENES
         )
 
 
@@ -649,7 +741,8 @@ def test_empty_pharmcat_output_with_coverage_sets_does_not_raise(tmp_path):
     empty = tmp_path / "empty.json"
     empty.write_text(json.dumps({"phenotypes": {}}))
     calls = parse_phenotype_json(
-        empty, uncovered_genes={"CYP2D6"}, partially_covered_genes={"CYP2C9"}
+        empty, uncovered_genes={"CYP2D6"}, partially_covered_genes={"CYP2C9"},
+        fully_covered_genes=set()
     )
 
     assert calls == [
@@ -663,10 +756,12 @@ def test_coverage_arguments_accept_any_iterable(tmp_path):
         SAMPLE,
         uncovered_genes=(g for g in ["CYP2D6"]),
         partially_covered_genes=["NAT2"],
+        fully_covered_genes=(g for g in ["CYP2C19", "DPYD"]),
     )
     by_gene = {c.gene: c for c in calls}
     assert by_gene["CYP2D6"].coverage == "not_covered"
     assert by_gene["NAT2"].coverage == "indeterminate"
+    assert by_gene["CYP2C19"].coverage == "called"
 
 
 def test_coverage_arguments_are_required():
@@ -675,6 +770,8 @@ def test_coverage_arguments_are_required():
         parse_phenotype_json(SAMPLE)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         parse_phenotype_json(SAMPLE, set())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        parse_phenotype_json(SAMPLE, set(), set())  # type: ignore[call-arg]
 
 
 def test_run_pharmcat_raises_when_docker_missing(tmp_path, monkeypatch):
