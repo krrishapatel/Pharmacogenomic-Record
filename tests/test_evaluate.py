@@ -24,6 +24,7 @@ from pharmacogenomic_record.evaluate import (
     NO_GUIDANCE_FOR_PAIR,
     QueryResult,
     _calls_by_gene,
+    _NOT_A_NEGATIVE,
     overall_outcome,
     query_drug,
 )
@@ -365,6 +366,40 @@ def test_no_cannot_assess_explanation_reads_as_reassurance(tmp_path, subject_id)
         # It must say, in words, that this is missing data rather than a
         # negative finding.
         assert "unknown" in text or "absence of data" in text, f"{label}: {text!r}"
+
+
+def test_the_positive_not_a_negative_sentence_is_present_and_nonblank():
+    """The one positive statement must not be silently blanked.
+
+    `_NOT_A_NEGATIVE` is the single sentence that says, in words, that
+    cannot_assess means missing data rather than a negative finding. Blanking it
+    to "" leaves the reassurance tests passing (they only assert forbidden
+    phrases are absent, plus that "unknown" -- from a different clause -- is
+    present). Pin the constant itself so an empty or whitespace-only version
+    cannot ship.
+    """
+    assert _NOT_A_NEGATIVE.strip()
+    assert "not absence of an interaction" in _NOT_A_NEGATIVE.lower()
+
+
+@pytest.mark.parametrize("subject_id", SUBJECT_IDS)
+def test_every_cannot_assess_explanation_contains_the_not_a_negative_sentence(
+    tmp_path, subject_id
+):
+    """Every cannot_assess wording must carry the literal safety sentence.
+
+    Both the "no record stored" wording and the "gene not covered" wording (and
+    the two others) must contain `_NOT_A_NEGATIVE` verbatim, so blanking the
+    constant to "" -- which the reassurance tests do not catch -- fails here.
+    """
+    situations = cannot_assess_situations(tmp_path, subject_id)
+    assert len(situations) == 4
+    for label, results in situations:
+        assert [r.outcome for r in results] == [CANNOT_ASSESS], label
+        assert _NOT_A_NEGATIVE in results[0].explanation, (
+            f"{label}: missing the not-a-negative sentence in "
+            f"{results[0].explanation!r}"
+        )
 
 
 @pytest.mark.parametrize("subject_id", SUBJECT_IDS)

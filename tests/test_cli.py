@@ -566,6 +566,48 @@ def test_query_output_says_it_is_not_a_medical_device(store, capsys):
     assert "not a medical device" in out.lower()
 
 
+def test_query_emits_the_full_disclaimer_verbatim(store, capsys):
+    """The whole disclaimer must appear, not just the "medical device" fragment.
+
+    Only the "not a medical device..." sentence was asserted before, so blanking
+    the disclaimer's FIRST line (the "reference to published CPIC citations"
+    claim) left every test green. Pinning the full constant makes either line's
+    removal fail.
+    """
+    from pharmacogenomic_record.cli import _DISCLAIMER
+
+    store.append(
+        "s1",
+        [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer", CALLED)],
+        guideline_version="cpic-2026-07",
+    )
+
+    cmd_query(store, "s1", "clopidogrel", pairs_path=PAIRS)
+    out = capsys.readouterr().out
+
+    assert _DISCLAIMER.strip()
+    assert _DISCLAIMER in out
+    # Both binding claims are present in the constant itself.
+    assert "reference to published CPIC citations" in _DISCLAIMER
+    assert "not a medical device" in _DISCLAIMER.lower()
+
+
+def test_drift_emits_the_full_disclaimer_verbatim(store, capsys):
+    """Drift output carries the same full disclaimer as query."""
+    from pharmacogenomic_record.cli import _DISCLAIMER
+
+    store.append(
+        "s1",
+        [GeneCall("CYP2D6", None, None, NOT_COVERED)],
+        guideline_version="cpic-2026-07",
+    )
+
+    cmd_drift(store, ["CYP2D6-codeine"], pairs_path=PAIRS)
+    out = capsys.readouterr().out
+
+    assert _DISCLAIMER in out
+
+
 # --------------------------------------------------------------------------
 # Exit codes.
 # --------------------------------------------------------------------------
