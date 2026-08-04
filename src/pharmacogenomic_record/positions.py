@@ -41,10 +41,20 @@ def _parse_gene(info: str) -> str | None:
 def load_positions(path: Path) -> list[ReferencePosition]:
     """Parse every data row of a PharmCAT positions VCF."""
     positions: list[ReferencePosition] = []
-    for line in path.read_text().splitlines():
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
         if not line or line.startswith("#"):
             continue
-        chrom, pos, rsid, ref, alt, _qual, _filter, info = line.split("\t")[:8]
+        fields = line.split("\t")
+        if len(fields) < 8:
+            # Name the file and 1-based line, matching ingest/raw.py's style: a
+            # bare "not enough values to unpack" locates nothing in a 1200-line
+            # reference table.
+            raise ValueError(
+                f"{path}:{number}: expected at least 8 tab-separated columns, "
+                f"found {len(fields)}; this does not look like a PharmCAT "
+                f"positions VCF"
+            )
+        chrom, pos, rsid, ref, alt, _qual, _filter, info = fields[:8]
         positions.append(
             ReferencePosition(
                 chrom=chrom,

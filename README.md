@@ -103,9 +103,19 @@ pharmacogenomic-record --db records.db drift --changed-pair CYP2D6-codeine
 
 Every block below is verbatim output from this tool, not an illustration. The
 inputs are the small **bundled test fixtures** under `tests/fixtures/`, not
-anyone's real genome — the command line names the fixture in each case. The
-numbers are therefore properties of those fixtures, reproducible by running the
-commands shown; they are not a measurement of any personal array.
+anyone's real genome — the command line names the fixture in each case; they are
+not a measurement of any personal array.
+
+The two **ingest** blocks are reproducible on any checkout: their coverage
+numbers are properties of the named fixtures and are re-derived by the test
+suite, so they do not need Docker. The **`query`** and **`drift`** blocks that
+follow read from a *stored record*, and writing one requires `run_pharmcat`
+(Docker), which is not available here. They were produced on a Docker-capable
+machine after ingesting the synthetic `23andme_full_cyp2c19.txt` fixture end to
+end; on a fresh checkout without that stored record, `query clopidogrel` instead
+prints a `CANNOT ASSESS` line ("no record is stored for this subject"). They are
+shown here to illustrate the three query outcomes, not as output you can
+regenerate without Docker.
 
 **Ingest.** Coverage is reported before PharmCAT is invoked, so a run that fails
 at the Docker step has still told you what your array covers. This machine has

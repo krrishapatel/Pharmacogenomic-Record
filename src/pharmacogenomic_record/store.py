@@ -211,10 +211,48 @@ class CorruptRecordError(ValueError):
 class RecordStore:
     """Append-only store of pharmacogenomic records."""
 
+    # The schema version stamped onto every database via PRAGMA user_version.
+    # The CHECK constraints and triggers in _SCHEMA guard NEW databases only:
+    # `CREATE TABLE IF NOT EXISTS` opens a pre-existing file untouched and keeps
+    # whatever rows it holds, and this applies to ANY constraint added later. So
+    # the version is stamped on creation and checked on open: a file built under
+    # an older (unguarded) schema, or a newer unknown one, is refused rather than
+    # silently migrated or silently accepted. Bump this whenever _SCHEMA changes
+    # in a way an existing file could violate.
+    SCHEMA_VERSION = 1
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         with self._connect() as conn:
+            self._guard_schema_version(conn)
             conn.executescript(_SCHEMA)
+            conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+
+    def _guard_schema_version(self, conn: sqlite3.Connection) -> None:
+        """Refuse a database created under a different schema version.
+
+        A brand-new file has no `records` table yet and reports user_version 0;
+        that is creation, not an old file, so it is stamped rather than refused.
+        A file that already has the schema but whose user_version is not the
+        current one predates this guard (or comes from a newer build), so it may
+        hold rows that today's CHECK constraints would reject. Fail loudly and
+        tell the user to rebuild -- silently migrating or accepting it is exactly
+        the decay ("we do not know" -> "normal metabolizer") the store forbids.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version == self.SCHEMA_VERSION:
+            return
+        already_initialized = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'"
+        ).fetchone()
+        if already_initialized and version != self.SCHEMA_VERSION:
+            raise ValueError(
+                f"database {self.db_path} was created by an older or unknown "
+                f"schema (user_version {version}, this build expects "
+                f"{self.SCHEMA_VERSION}); its rows were written under different "
+                f"constraints and are not trusted. Rebuild the record from the "
+                f"raw export rather than opening this file."
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

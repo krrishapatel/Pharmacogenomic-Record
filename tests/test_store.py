@@ -60,6 +60,72 @@ def insert_bare_record(store, subject_id, ingested_at="2026-01-01T00:00:00+00:00
     return record_id
 
 
+def test_a_freshly_created_db_has_the_expected_user_version(store):
+    """Creation stamps the schema version onto the file.
+
+    The CHECK constraints and triggers guard NEW databases only:
+    `CREATE TABLE IF NOT EXISTS` opens a pre-existing db without applying them.
+    Stamping `PRAGMA user_version` on creation is what lets `open` later detect
+    a db built under an older, unguarded schema.
+    """
+    conn = sqlite3.connect(store.db_path)
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+    assert version == RecordStore.SCHEMA_VERSION
+    assert version >= 1
+
+
+def test_reopening_a_current_db_succeeds(store, tmp_path):
+    """A db at the current schema version opens without complaint."""
+    store.append("s1", CALLS, guideline_version="cpic-2026-07")
+    reopened = RecordStore(tmp_path / "records.db")
+    assert reopened.history("s1") == store.history("s1")
+
+
+def test_an_older_schema_db_is_rejected_loudly(tmp_path):
+    """A db predating the version guard (user_version 0) must be refused.
+
+    A pre-existing file created without the guard opens fine under
+    `CREATE TABLE IF NOT EXISTS` and keeps whatever bad rows it holds -- and
+    this applies to ANY future constraint too. The store must fail loudly and
+    tell the user to rebuild, never silently migrate or silently accept it.
+    """
+    db_path = tmp_path / "old.db"
+    # Build a db that looks like an older schema: tables present, but no version
+    # stamp (user_version defaults to 0), exactly what a pre-guard file has.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS records (record_id INTEGER PRIMARY KEY);"
+        )
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError) as excinfo:
+        RecordStore(db_path)
+    message = str(excinfo.value).lower()
+    assert "older" in message or "rebuild" in message
+
+
+def test_an_unknown_future_schema_db_is_rejected_loudly(tmp_path):
+    """A db stamped with a newer, unknown version is refused too."""
+    db_path = tmp_path / "future.db"
+    RecordStore(db_path)  # create at current version
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(f"PRAGMA user_version = {RecordStore.SCHEMA_VERSION + 1}")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError):
+        RecordStore(db_path)
+
+
 def test_append_and_read_back(store):
     store.append("subject-1", CALLS, guideline_version="cpic-2026-07")
     calls = store.latest("subject-1")

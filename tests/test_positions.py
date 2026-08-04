@@ -90,3 +90,28 @@ def test_reference_position_is_immutable():
     )
     with pytest.raises(FrozenInstanceError):
         p.pos = 2
+
+
+def test_malformed_line_error_names_the_file_and_line_number(tmp_path):
+    """A row that cannot be split into 8 columns must locate itself.
+
+    A bare "not enough values to unpack" names neither file nor line, so a user
+    with a 1200-line reference table has nothing to go on. The message must
+    carry the path and the 1-based line number, matching ingest/raw.py's
+    `{path}:{number}:` style.
+    """
+    bad = tmp_path / "positions.vcf"
+    # A valid header line, one good data row, then a truncated data row on line 3.
+    bad.write_text(
+        "##fileformat=VCFv4.2\n"
+        "chr1\t1\trs1\tA\tG\t.\tPASS\tPX=DPYD\n"
+        "chr1\t2\trs2\n"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        load_positions(bad)
+
+    message = str(excinfo.value)
+    assert str(bad) in message
+    # The truncated row is line 3 (1-based, counting the header).
+    assert ":3:" in message
