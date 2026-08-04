@@ -235,8 +235,14 @@ def cmd_drift(
     store: RecordStore,
     changed_pair_ids: Sequence[str],
     pairs_path: Path = PAIRS_PATH,
-) -> None:
+) -> bool:
     """Report which stored records a guideline revision touches.
+
+    Returns True when every requested pair id matched a known CPIC pair, and
+    False when one or more matched nothing. The return value is what lets `main`
+    choose an exit code: a typo'd id is a request that could not be checked, and
+    exiting 0 for it would let a wrapper read a typo as "nobody affected" -- the
+    same collapse the three-valued query exit codes exist to prevent.
 
     `changed_pair_ids` is a Sequence, and `argparse` builds it with
     `action="append"`, so a single `--changed-pair` still arrives as a
@@ -298,6 +304,7 @@ def cmd_drift(
             f"touches."
         )
     print(_DISCLAIMER)
+    return not unknown
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -370,8 +377,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_OK
         if args.command == "drift":
-            cmd_drift(store, args.changed_pairs, pairs_path=args.pairs)
-            return EXIT_OK
+            all_ids_known = cmd_drift(
+                store, args.changed_pairs, pairs_path=args.pairs
+            )
+            # A requested id that matched no known pair was never checked; that
+            # is "we could not assess what you asked", not a clean result, so it
+            # must not exit 0. A run where every id matched a real pair -- even
+            # if the revision touches nobody stored -- is a genuine answer.
+            return EXIT_OK if all_ids_known else EXIT_CANNOT_ASSESS
 
         outcome = cmd_query(store, args.subject, args.drug, pairs_path=args.pairs)
         # guidance_found and no_guidance_for_pair are both answers about the

@@ -863,3 +863,49 @@ def test_main_drift_passes_a_collection_not_a_bare_string(tmp_path, capsys):
 
     assert code == EXIT_OK
     assert "CYP2D6-codeine" in out
+
+
+def test_drift_exit_code_distinguishes_a_typo_from_a_genuine_no_match(
+    tmp_path, capsys
+):
+    """A mistyped pair id must not exit 0 like a genuine "nobody affected".
+
+    `drift --changed-pair CYP2D6-codiene` (typo) prints a warning but used to
+    exit 0, so a wrapper `if pgx drift ...; then echo "nobody affected"; fi`
+    reads a typo as a clean bill of health -- the same collapse exit codes exist
+    to prevent for `query`. An id that matched no known pair means "we could not
+    check what you asked", which is EXIT_CANNOT_ASSESS. A genuine result where
+    every id matched a real pair stays EXIT_OK.
+    """
+    db = _seed(tmp_path, [GeneCall("CYP2C19", "*1/*2", "Intermediate Metabolizer",
+                                   CALLED)])
+
+    # A real pair that simply touches no stored record: a genuine answer, EXIT_OK.
+    genuine = main(["--db", str(db), "drift", "--changed-pair", "CYP2D6-codeine",
+                    "--pairs", str(PAIRS)])
+    capsys.readouterr()
+
+    # A typo: matches no known pair. We could not check it -> non-zero.
+    typo = main(["--db", str(db), "drift", "--changed-pair", "CYP2D6-codiene",
+                 "--pairs", str(PAIRS)])
+    capsys.readouterr()
+
+    assert genuine == EXIT_OK
+    assert typo != EXIT_OK
+    assert typo == EXIT_CANNOT_ASSESS
+
+
+def test_drift_with_a_real_match_alongside_a_typo_still_exits_nonzero(
+    tmp_path, capsys
+):
+    """One good id and one typo: the unchecked typo still forces a non-zero exit."""
+    db = _seed(tmp_path, [GeneCall("CYP2D6", None, None, NOT_COVERED)])
+
+    code = main(["--db", str(db), "drift",
+                 "--changed-pair", "CYP2D6-codeine",
+                 "--changed-pair", "CYP2D6-codiene",
+                 "--pairs", str(PAIRS)])
+    out = capsys.readouterr().out
+
+    assert "[AFFECTED]" in out
+    assert code == EXIT_CANNOT_ASSESS
