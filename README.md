@@ -10,7 +10,7 @@ must not be used to make treatment decisions.**
 ## What this is
 
 PharmCAT is excellent and stateless: VCF in, report out. This project adds the
-layer it does not have — a persistent, version-stamped record that is written
+layer it does not have: a persistent, version-stamped record that is written
 once, never modified, and re-evaluated every time a new drug is queried or a
 guideline is revised.
 
@@ -36,10 +36,10 @@ never collapse into one:
 |---|---|---|
 | `guidance_found` | Gene called, CPIC publishes guidance for this pair | 0 |
 | `no_guidance_for_pair` | Gene called **confidently**, CPIC publishes nothing | 0 |
-| `cannot_assess` | Gene `not_covered`/`indeterminate`, or no record — **we do not know** | 2 |
+| `cannot_assess` | Gene `not_covered`/`indeterminate`, or no record, so **we do not know** | 2 |
 
-Underneath sit three coverage states — `called`, `not_covered`,
-`indeterminate` — and **coverage alone decides whether a gene is assessable**.
+Underneath sit three coverage states: `called`, `not_covered`, and
+`indeterminate`. **Coverage alone decides whether a gene is assessable**.
 Never the phenotype: F2, F5, VKORC1, CFTR, IFNL3 and ABCG2 legitimately have no
 metabolizer phenotype at all, so a `called` gene with `phenotype=None` is a real
 answer and is reported as one.
@@ -47,7 +47,7 @@ answer and is reported as one.
 `cannot_assess` is never rendered as reassurance. Presenting "we have no data"
 as "no interaction found" is the most dangerous thing this system could do, so
 the rendering is tested against a list of phrases it may not contain, and
-`cannot_assess` exits **2** rather than 0 — a shell script writing
+`cannot_assess` exits **2** rather than 0. A shell script writing
 `if pharmacogenomic-record query codeine ...; then` must not read an unknown as
 an all-clear.
 
@@ -57,7 +57,7 @@ A gene is eligible to be `called` only if **every rsID-joinable position for
 that gene was covered** by the array. Strict, with no threshold and no ratio,
 because there is no defensible one: PharmCAT assumes reference at any position
 it was not given, so a gene with 39 of 40 positions covered still yields a
-confident "*1/*1 Normal Metabolizer" — and the missing position is exactly where
+confident "*1/*1 Normal Metabolizer", and the missing position is exactly where
 a variant would have been.
 
 Two facts about `pharmcat_positions_3.4.0.vcf` itself are fixed and verified
@@ -69,7 +69,7 @@ Two facts about `pharmcat_positions_3.4.0.vcf` itself are fixed and verified
 
 A consumer array genotypes only a very sparse subset of the 1018 rsID-bearing
 positions. So under the strict rule nearly every gene comes out `indeterminate`
-or `not_covered`, and `called` is rare — and that is the truthful result for a
+or `not_covered`, and `called` is rare. That is the truthful result for a
 sparse consumer array, not a defect in this tool. If you run it on your own
 export and it mostly says "cannot assess", it is working correctly and telling
 you something real: your array did not measure enough of those genes to support
@@ -103,7 +103,7 @@ pharmacogenomic-record --db records.db drift --changed-pair CYP2D6-codeine
 
 Every block below is verbatim output from this tool, not an illustration. The
 inputs are the small **bundled test fixtures** under `tests/fixtures/`, not
-anyone's real genome — the command line names the fixture in each case; they are
+anyone's real genome. The command line names the fixture in each case; they are
 not a measurement of any personal array.
 
 The two **ingest** blocks are reproducible on any checkout: their coverage
@@ -119,7 +119,7 @@ regenerate without Docker.
 
 **Ingest.** Coverage is reported before PharmCAT is invoked, so a run that fails
 at the Docker step has still told you what your array covers. This machine has
-no Docker, which is why the run ends where it does — and note that the failure is
+no Docker, which is why the run ends where it does. Note that the failure is
 surfaced loudly and no record is written. The `23andme_valid.txt` fixture is a
 10-line sample that covers just 4 positions:
 
@@ -138,10 +138,10 @@ $ echo $?
 ```
 
 Those 4 covered positions (out of the 1226 in the table, 208 of which carry no
-rsID) leave zero genes eligible to be called — the sparse-array result the
+rsID) leave zero genes eligible to be called, the sparse-array result the
 strict rule is built for. A larger fixture,
-`tests/fixtures/23andme_full_cyp2c19.txt` — which is **synthetic**, engineered
-to cover every rsID-joinable CYP2C19 and VKORC1 position — reports 36 covered
+`tests/fixtures/23andme_full_cyp2c19.txt`, which is **synthetic**, engineered
+to cover every rsID-joinable CYP2C19 and VKORC1 position, reports 36 covered
 positions and two fully covered genes, showing the other side of the rule:
 
 ```
@@ -158,7 +158,7 @@ $ echo $?
 1
 ```
 
-**`guidance_found`** — a gene whose every joinable position was covered, so
+**`guidance_found`**: a gene whose every joinable position was covered, so
 PharmCAT's call is allowed through:
 
 ```
@@ -170,7 +170,7 @@ $ echo $?
 0
 ```
 
-**`cannot_assess`** — the common case. It is loud, it still cites where the
+**`cannot_assess`**: the common case. It is loud, it still cites where the
 guidance is, and it exits 2:
 
 ```
@@ -183,7 +183,7 @@ $ echo $?
 ```
 
 **A drug with several relevant genes.** Warfarin has two pairs, and the OVERALL
-line is the *least reassuring* component — one unknown gene invalidates any claim
+line is the *least reassuring* component. One unknown gene invalidates any claim
 that the answer is complete:
 
 ```
@@ -219,7 +219,7 @@ $ echo $?
 2
 ```
 
-**Guideline drift** — the reason the record is persistent at all. Coverage is
+**Guideline drift**: the reason the record is persistent at all. Coverage is
 deliberately *not* a filter here: a subject whose CYP2D6 was never covered is
 still reported, because new guidance may be the very reason to finally get
 proper testing:
@@ -231,7 +231,7 @@ This output is a reference to published CPIC citations, keyed on stored gene cal
 ```
 
 A mistyped pair id gets a **warning**, never the reassuring "touches nobody"
-negative a real-but-unmatched pair would get — an id that matched nothing was
+negative a real-but-unmatched pair would get. An id that matched nothing was
 never checked, and that is not the same as a revision touching nobody:
 
 ```
@@ -280,7 +280,7 @@ the repo root), and `src/pharmacogenomic_record/data/.gitignore` ignores
 everything in that directory except the two committed reference tables. `work/`
 and `records.db` are ignored at the repo root.
 
-`tests/fixtures/23andme_full_cyp2c19.txt` is **synthetic** — it is not any
+`tests/fixtures/23andme_full_cyp2c19.txt` is **synthetic**. It is not any
 person's genotype data. It exists so the strict coverage rule can be exercised
 end to end, by covering every rsID-joinable CYP2C19 and VKORC1 position.
 
@@ -288,5 +288,5 @@ end to end, by covering every rsID-joinable CYP2C19 and VKORC1 position.
 
 PharmCAT is MPL-2.0. CPIC and PharmGKB guideline content is referenced by link,
 never redistributed. Embedding guideline text or commercializing this project
-requires resolving CPIC/PharmGKB data-use terms first — those terms were never
+requires resolving CPIC/PharmGKB data-use terms first. Those terms were never
 verified for this project, and the link-only design is what sidesteps them.
