@@ -1,5 +1,7 @@
 # Pharmacogenomic-Record
 
+[![CI](https://github.com/krrishapatel/Pharmacogenomic-Record/actions/workflows/ci.yml/badge.svg)](https://github.com/krrishapatel/Pharmacogenomic-Record/actions/workflows/ci.yml)
+
 A single-subject longitudinal pharmacogenomic record built on
 [PharmCAT](https://github.com/PharmGKB/PharmCAT).
 
