@@ -29,3 +29,12 @@ pharmacogenomic_record = ["data/gene_drug_pairs.json", "data/pharmcat_positions_
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Ruff's own default rule set: the pycodestyle errors that indicate a real
+# problem, plus all of pyflakes. Named explicitly so a new ruff release cannot
+# widen it and turn CI red without a code change. The wider style rules are
+# deliberately left out: they would mean reformatting every file to change no
+# behaviour, and the useful part of linting here was pyflakes, which found dead
+# code and an undefined name.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

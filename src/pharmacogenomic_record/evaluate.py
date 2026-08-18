@@ -130,8 +130,8 @@ def _assessed(pair: GuidelineRef, call: GeneCall) -> QueryResult:
     """
     if call.phenotype is None:
         phenotype_text = (
-            f"PharmCAT assigns this gene no metabolizer phenotype; the diplotype "
-            f"is what the guideline keys on."
+            "PharmCAT assigns this gene no metabolizer phenotype; the diplotype "
+            "is what the guideline keys on."
         )
     else:
         phenotype_text = f"PharmCAT assigned phenotype {call.phenotype!r}."
