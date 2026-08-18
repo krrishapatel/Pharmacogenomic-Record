@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from pharmacogenomic_record import POSITIONS_FILENAME
+from pharmacogenomic_record import caller
 from pharmacogenomic_record.caller import (
     CALLED,
     INDETERMINATE,
@@ -418,7 +419,14 @@ def test_error_line_is_ordered_after_the_output_it_follows(tmp_path):
     assert lines[-1].startswith("error: ")
 
 
-def test_main_ingest_exits_nonzero_when_pharmcat_cannot_run(tmp_path, capsys):
+def test_main_ingest_exits_nonzero_when_pharmcat_cannot_run(tmp_path, capsys,
+                                                            monkeypatch):
+    # The missing-docker branch has to be forced. This test used to rely on the
+    # host simply not having docker, so on a machine that does have it the run
+    # got further and failed somewhere else, and the test was asserting against
+    # whichever error happened to come out.
+    monkeypatch.setattr(caller.shutil, "which", lambda name: None)
+
     exit_code = main(
         [
             "--db", str(tmp_path / "records.db"),
