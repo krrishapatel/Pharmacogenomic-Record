@@ -149,6 +149,57 @@ def test_partially_covered_gene_is_not_evidence_of_absence(tmp_path):
     assert "rs2" in report.uncovered_rsids  # the other DPYD position
 
 
+def test_hemizygous_call_is_uncovered_but_reported_as_measured(tmp_path):
+    """A single-allele call is not covered, and not silently absent either.
+
+    It writes no VCF row, so it cannot count as covered. But the array did
+    report it, and folding that into plain "uncovered" would tell the user their
+    array never measured a position it did measure. For a male sample this is
+    every joinable G6PD position.
+    """
+    out = tmp_path / "out.vcf"
+    calls = [RawCall(rsid="rs1", chrom="X", pos=100, genotype="G")]
+
+    report = build_vcf(calls, REF, out)
+
+    assert "rs1" not in report.covered_rsids
+    assert "rs1" in report.uncovered_rsids
+    assert "rs1" not in out.read_text()
+
+    assert report.hemizygous_rsids == frozenset({"rs1"})
+    assert report.hemizygous_genes == frozenset({"DPYD"})
+
+
+def test_hemizygous_set_is_empty_for_ordinary_diploid_input(tmp_path):
+    """The new sets stay empty rather than shadowing covered positions."""
+    out = tmp_path / "out.vcf"
+    calls = [RawCall(rsid="rs1", chrom="1", pos=100, genotype="GG")]
+
+    report = build_vcf(calls, REF, out)
+
+    assert report.covered_rsids == frozenset({"rs1"})
+    assert report.hemizygous_rsids == frozenset()
+    assert report.hemizygous_genes == frozenset()
+
+
+def test_hemizygous_set_ignores_positions_the_table_does_not_need(tmp_path):
+    """A consumer file is full of hemizygous chrY and chrM calls.
+
+    Counting all of them would report a large number that says nothing about
+    pharmacogenomic coverage, so only positions the reference table actually
+    lists are counted.
+    """
+    out = tmp_path / "out.vcf"
+    calls = [
+        RawCall(rsid="rs1", chrom="X", pos=100, genotype="G"),
+        RawCall(rsid="rs999999", chrom="Y", pos=1, genotype="A"),
+    ]
+
+    report = build_vcf(calls, REF, out)
+
+    assert report.hemizygous_rsids == frozenset({"rs1"})
+
+
 def test_untranslatable_genotype_counts_as_uncovered(tmp_path):
     """A call whose alleles don't match ref/alt yields no data, not a ref call."""
     out = tmp_path / "out.vcf"

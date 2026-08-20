@@ -170,6 +170,19 @@ def cmd_ingest(
         f"positions with no rsID, unjoinable from a 23andMe file: "
         f"{report.unjoinable_positions}"
     )
+    if report.hemizygous_rsids:
+        # Printed only when there are any, and it says "measured" explicitly:
+        # counted as uncovered above, but the array did report these, so they
+        # must not read as positions it never had.
+        print(
+            f"positions measured as a single allele, not encodable here: "
+            f"{len(report.hemizygous_rsids)}"
+            + (
+                f" -- {', '.join(sorted(report.hemizygous_genes))}"
+                if report.hemizygous_genes
+                else ""
+            )
+        )
     print(
         f"genes fully covered (eligible to be called): "
         f"{len(report.genes_fully_covered)}"

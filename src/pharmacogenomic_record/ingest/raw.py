@@ -8,6 +8,16 @@ where that mess is contained. Two rules:
 2. Drop rows that cannot be joined -- internal 'i' identifiers and no-calls
    ('--'). Dropping them here means downstream code sees only usable calls,
    and the positions they would have covered surface as not_covered.
+
+Hemizygous single-allele calls are the exception to rule 2: they are kept and
+passed on, even though nothing downstream can encode them yet. They used to be
+dropped here on the stated grounds that no valid VCF genotype existed for them,
+which is not true -- a haploid GT of "0" or "1" is valid VCF 4.2 and is the
+standard encoding for male non-PAR chrX, chrY and chrM. Dropping them silently
+made a measured position indistinguishable from one the array never had, and for
+a male sample that is every G6PD position in the reference table: the only
+X-linked gene there, and the one where hemizygosity is the clinical point. They
+are carried through so the coverage report can say so out loud.
 """
 
 from __future__ import annotations
@@ -45,6 +55,16 @@ class RawCall:
     pos: int
     genotype: str
 
+    @property
+    def is_hemizygous(self) -> bool:
+        """True for a single-allele call, as reported for male non-PAR chrX.
+
+        A property rather than a stored flag so it cannot disagree with the
+        genotype it describes. No-calls and indel codes never reach a RawCall,
+        so a one-character genotype here is a real single nucleotide.
+        """
+        return len(self.genotype) == 1
+
 
 def _validate_header(header_text: str) -> None:
     lowered = header_text.lower()
@@ -79,10 +99,13 @@ def parse_23andme(path: Path) -> list[RawCall]:
     """Parse a 23andMe raw export into joinable genotype calls.
 
     Rows that carry no usable information are dropped: internal 'i'
-    identifiers, no-calls, indel codes, and hemizygous single-allele calls
-    (which have no diploid VCF representation). Rows whose *shape* is wrong
-    are a rejection, not a skip -- a wrong-format file must not parse to an
-    empty list and look like a clean file with nothing relevant in it.
+    identifiers, no-calls, and indel codes. Rows whose *shape* is wrong are a
+    rejection, not a skip -- a wrong-format file must not parse to an empty list
+    and look like a clean file with nothing relevant in it.
+
+    Hemizygous single-allele calls are kept, flagged by `RawCall.is_hemizygous`.
+    Nothing writes them to a VCF yet, but a measured position has to stay
+    distinguishable from an absent one; see the module docstring.
     """
     lines = path.read_text().splitlines()
     header_text = "\n".join(line for line in lines if line.startswith("#"))
@@ -112,8 +135,9 @@ def parse_23andme(path: Path) -> list[RawCall]:
             continue
         if set(genotype) & _INDEL_CODES:
             continue
-        if len(genotype) != 2:
-            # Hemizygous or otherwise non-diploid; no valid VCF GT exists.
+        if len(genotype) not in (1, 2):
+            # Neither haploid nor diploid, so it is not a genotype this format
+            # is supposed to contain.
             continue
 
         calls.append(

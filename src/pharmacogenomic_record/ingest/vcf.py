@@ -90,6 +90,14 @@ class CoverageReport:
     rsID at all. They appear in neither covered nor uncovered because they have
     no rsID to key on -- but they are real gaps in coverage, so the count is
     surfaced rather than silently dropped.
+
+    `hemizygous_rsids` and `hemizygous_genes` are the same idea for the same
+    reason: reference positions the array did measure, as a single allele, that
+    this pipeline cannot yet write to a VCF. They count as uncovered, because
+    nothing about them reaches PharmCAT, but "measured and not encodable" is a
+    different fact from "never measured" and the two must not be reported as one.
+    For a male sample this is every joinable G6PD position, G6PD being the only
+    X-linked gene in the table.
     """
 
     covered_rsids: frozenset[str]
@@ -98,6 +106,8 @@ class CoverageReport:
     genes_partially_covered: frozenset[str]
     genes_fully_covered: frozenset[str]
     unjoinable_positions: int
+    hemizygous_rsids: frozenset[str]
+    hemizygous_genes: frozenset[str]
 
 
 def translate_genotype(genotype: str, ref: ReferencePosition) -> str | None:
@@ -105,6 +115,13 @@ def translate_genotype(genotype: str, ref: ReferencePosition) -> str | None:
 
     Returns None when any allele is neither the reference nor a known
     alternate, which means the call tells us nothing about this position.
+
+    A single-allele hemizygous call also returns None. That is a limitation, not
+    a property of VCF: a haploid GT is legal and is what such a call should
+    become. It is left unencoded because whether the pinned PharmCAT image
+    accepts a haploid GT for G6PD has not been verified here, and sending it
+    something unverified is worse than reporting the gap. `CoverageReport`
+    reports the gap.
     """
     if len(genotype) != 2:
         return None
@@ -182,6 +199,20 @@ def build_vcf(
         if joinable_by_gene.get(gene, set()) <= covered
     }
 
+    # Measured as a single allele at a position the reference table needs. Not
+    # covered, because no VCF row was written for it, but distinct from a
+    # position the array never reported at all.
+    hemizygous_rsids = {
+        call.rsid
+        for call in calls
+        if call.is_hemizygous and call.rsid in by_rsid
+    } - covered
+    hemizygous_genes = {
+        by_rsid[rsid].gene
+        for rsid in hemizygous_rsids
+        if by_rsid[rsid].gene is not None
+    }
+
     return CoverageReport(
         covered_rsids=frozenset(covered),
         uncovered_rsids=frozenset(all_joinable - covered),
@@ -191,4 +222,6 @@ def build_vcf(
         ),
         genes_fully_covered=frozenset(genes_fully_covered),
         unjoinable_positions=len(positions) - len(by_rsid),
+        hemizygous_rsids=frozenset(hemizygous_rsids),
+        hemizygous_genes=frozenset(hemizygous_genes),
     )

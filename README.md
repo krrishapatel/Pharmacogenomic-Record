@@ -86,6 +86,22 @@ Two further limits on the join, both structural:
   rsID-bearing and RYR1 78%, so even a perfect array could not fully inform them
   through this path. `unjoinable_positions` is reported for exactly this reason;
   it is a known residual gap, not a solved one.
+- Hemizygous calls are not encoded, which for a male sample means **no G6PD
+  position is usable at all**. G6PD is the only X-linked gene in the table, and
+  23andMe reports one allele per position for male non-PAR chrX, so all 67 of its
+  rsID-joinable positions arrive as single letters and none becomes a VCF row.
+  This is a limitation of this pipeline and not of VCF: a haploid `GT` of `0` or
+  `1` is valid VCF 4.2 and is what those calls should become. It is left
+  unimplemented because whether the pinned PharmCAT image accepts a haploid GT
+  for G6PD has not been verified here, and feeding it something unverified is
+  worse than reporting the gap. What was fixed is the reporting: those positions
+  used to be dropped during parsing, so they were indistinguishable from
+  positions the array never measured and G6PD came back `not_covered`, meaning
+  "your array said nothing about this gene" when it had in fact measured every
+  position. They are now carried through to `hemizygous_rsids` and printed as
+  `positions measured as a single allele, not encodable here`. They still count
+  as uncovered, so no call is affected; the difference is that the reason is now
+  the true one.
 - `CYP2D6` depends on copy-number and structural variation that consumer arrays
   cannot resolve at all. That is a different limitation from the rsID join and is
   not something coverage counting can detect.

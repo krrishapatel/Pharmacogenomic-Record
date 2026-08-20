@@ -79,18 +79,27 @@ def test_rejects_non_numeric_position():
         bad.unlink()
 
 
-def test_drops_hemizygous_indel_and_single_dash_genotypes():
-    """Only diploid nucleotide genotypes survive.
+def test_drops_indel_and_dash_genotypes_but_keeps_hemizygous_ones():
+    """Nucleotide genotypes survive, haploid as well as diploid.
 
-    A 1-character genotype has no valid diploid VCF GT, a single dash is a
-    hemizygous no-call, and D/I indel codes are not nucleotide alleles that
-    can be matched against reference ref/alt bases.
+    A single dash is a hemizygous no-call and D/I indel codes are not nucleotide
+    alleles that can be matched against reference ref/alt bases, so neither can
+    ever be joined. A single nucleotide is different: it is a real measurement,
+    and dropping it here would make it indistinguishable downstream from a
+    position the array never reported.
     """
     calls = parse_23andme(FIXTURES / "23andme_edge_genotypes.txt")
 
-    assert {c.rsid for c in calls} == {"rs114096998", "rs1801268"}
-    assert all(len(c.genotype) == 2 for c in calls)
+    assert {c.rsid for c in calls} == {
+        "rs114096998", "rs1801268", "rs9999991",
+    }
     assert all(not set(c.genotype) & {"D", "I"} for c in calls)
+    assert all(c.genotype not in ("-", "--") for c in calls)
+
+    by_rsid = {c.rsid: c for c in calls}
+    assert by_rsid["rs9999991"].genotype == "G"
+    assert by_rsid["rs9999991"].is_hemizygous
+    assert not by_rsid["rs114096998"].is_hemizygous
 
 
 def test_rejects_file_that_yields_no_usable_calls():
